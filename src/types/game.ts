@@ -36,7 +36,23 @@ export interface CircuitInfo {
 
 export type ControlMode = 'gyro' | 'touch';
 export type CameraMode = 'cockpit' | 'chase' | 'cinematic';
-export type DrivingMode = 'practice' | 'time_attack';
+export type DrivingMode = 'practice' | 'race' | 'time_attack';
+
+export interface LapRecordItem {
+  lapNumber: number;
+  time: number;
+  isBest: boolean;
+}
+
+export interface RaceStanding {
+  position: number;
+  driver: string;
+  team: string;
+  teamColor: string;
+  isPlayer: boolean;
+  gap: string;
+  lapsCompleted: number;
+}
 
 export interface GameTelemetry {
   speedKmh: number;
@@ -52,6 +68,15 @@ export interface GameTelemetry {
   isOffTrack: boolean;
   drsAvailable: boolean;
   drsActive: boolean;
+  // Race Mode Fields
+  racePosition: number; // 1 to 5
+  totalRaceCars: number; // 5
+  raceCurrentLap: number; // 1 to 3
+  raceLapsTotal: number; // 3
+  countdownSeconds: number | null; // 3, 2, 1, 0 or null
+  isRaceFinished: boolean;
+  raceStandings: RaceStanding[];
+  lapHistory: LapRecordItem[];
 }
 
 export interface SensorStatus {

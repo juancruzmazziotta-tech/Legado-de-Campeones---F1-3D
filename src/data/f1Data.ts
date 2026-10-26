@@ -35,6 +35,70 @@ export const CARS_DATA: CarSpecs[] = [
   },
 ];
 
+export interface AIRivalSpec {
+  id: string;
+  name: string;
+  driver: string;
+  team: string;
+  primaryColor: string;
+  secondaryColor: string;
+  accentColor: string;
+  topSpeed: number;
+  acceleration: number;
+  aggression: number;
+}
+
+export const AI_RIVALS: AIRivalSpec[] = [
+  {
+    id: 'rival_redbull',
+    name: 'Red Bull RB19',
+    driver: 'Max Verstappen #1',
+    team: 'Red Bull Racing',
+    primaryColor: '#101d3b',
+    secondaryColor: '#cc1e28',
+    accentColor: '#fcd800',
+    topSpeed: 355,
+    acceleration: 2.2,
+    aggression: 1.12,
+  },
+  {
+    id: 'rival_ferrari',
+    name: 'Ferrari SF-23',
+    driver: 'Charles Leclerc #16',
+    team: 'Scuderia Ferrari',
+    primaryColor: '#dc0000',
+    secondaryColor: '#101010',
+    accentColor: '#ffffff',
+    topSpeed: 353,
+    acceleration: 2.22,
+    aggression: 1.06,
+  },
+  {
+    id: 'rival_mercedes',
+    name: 'Mercedes W14',
+    driver: 'Lewis Hamilton #44',
+    team: 'Mercedes-AMG',
+    primaryColor: '#1e1e1e',
+    secondaryColor: '#00d2be',
+    accentColor: '#00a19c',
+    topSpeed: 351,
+    acceleration: 2.28,
+    aggression: 1.0,
+  },
+  {
+    id: 'rival_mclaren',
+    name: 'McLaren MCL60',
+    driver: 'Lando Norris #4',
+    team: 'McLaren F1 Team',
+    primaryColor: '#ff8000',
+    secondaryColor: '#141414',
+    accentColor: '#47c7fc',
+    topSpeed: 350,
+    acceleration: 2.25,
+    aggression: 0.96,
+  },
+];
+
 export const CIRCUITS_DATA: CircuitInfo[] = [
   {
     id: 'imola',

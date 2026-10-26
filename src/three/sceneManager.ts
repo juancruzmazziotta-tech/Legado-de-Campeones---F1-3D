@@ -1,15 +1,41 @@
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
-import { CarSpecs, CircuitId, CameraMode, ControlMode, DrivingMode, GameTelemetry, OrientationData } from '../types/game';
+import {
+  CarSpecs,
+  CircuitId,
+  CameraMode,
+  ControlMode,
+  DrivingMode,
+  GameTelemetry,
+  OrientationData,
+  RaceStanding,
+  LapRecordItem,
+} from '../types/game';
 import { buildF1Car, F1CarController } from './carModel';
 import { buildCircuitTrack, CircuitTrack } from './trackGenerator';
 import { audioManager, triggerHaptic } from '../audio/engineSound';
+import { AI_RIVALS, AIRivalSpec } from '../data/f1Data';
 
 export interface SceneCallbacks {
   onTelemetryUpdate: (telemetry: GameTelemetry) => void;
   onLapCompleted: (lapTime: number, isBest: boolean, lapNumber: number) => void;
   onInspectPart: (partInfo: { name: string; specs: string; description: string }) => void;
   onStartingLightsUpdate?: (lightsCount: number, green: boolean) => void;
+}
+
+interface AICarInstance {
+  spec: AIRivalSpec;
+  controller: F1CarController;
+  position: THREE.Vector3;
+  heading: number;
+  speedKmh: number;
+  progress: number;
+  lapCount: number;
+  lateralOffset: number;
+  targetLateralOffset: number;
+  personalitySpeedFactor: number;
+  laneChangeTimer: number;
+  isBraking: boolean;
 }
 
 export class F1SceneManager {
@@ -23,6 +49,7 @@ export class F1SceneManager {
 
   // Game entities
   private carController: F1CarController | null = null;
+  private aiCars: AICarInstance[] = [];
   private track: CircuitTrack | null = null;
   private carSpecs: CarSpecs;
   private circuitId: CircuitId;
@@ -30,6 +57,16 @@ export class F1SceneManager {
   private controlMode: ControlMode = 'touch';
   private drivingMode: DrivingMode = 'practice';
   private callbacks: SceneCallbacks;
+
+  // Race & Lap History State
+  private lapHistory: LapRecordItem[] = [];
+  private racePosition: number = 4;
+  private raceLapsTotal: number = 3;
+  private isRaceFinished: boolean = false;
+  private raceStandings: RaceStanding[] = [];
+  private raceCountdownSeconds: number | null = null;
+  private raceCountdownTimer: number = 0;
+  private raceStartElapsed: boolean = false;
 
   // Physics & Vehicle State
   private carPosition: THREE.Vector3 = new THREE.Vector3();
@@ -55,7 +92,7 @@ export class F1SceneManager {
   private hasCrossedStart: boolean = false;
   private currentSector: 1 | 2 | 3 = 1;
 
-  // Starting Lights sequence for Time Attack
+  // Starting Lights sequence for Time Attack / Race
   private countdownState: 'idle' | 'counting' | 'green' = 'idle';
   private countdownTimer: number = 0;
   private countdownRedCount: number = 0;
@@ -223,15 +260,97 @@ export class F1SceneManager {
     this.track = buildCircuitTrack(this.circuitId, this.customCircuitUrl);
     this.scene.add(this.track.group);
 
-    // Position Car on starting grid
-    this.carPosition.copy(this.track.startPosition);
-    this.carHeading = Math.atan2(this.track.startTangent.x, this.track.startTangent.z);
+    const L = this.track.totalLength || 5000;
 
-    // Build F1 Car
-    this.carController = buildF1Car(this.carSpecs);
-    this.carController.carGroup.position.copy(this.carPosition);
-    this.carController.carGroup.rotation.y = this.carHeading;
-    this.scene.add(this.carController.carGroup);
+    if (this.drivingMode === 'race') {
+      // 5-Car Starting Grid (Staggered F1 formation)
+      // Slot 0 (AI 1, Pole): 8m behind start line, lateral offset -2.6m
+      // Slot 1 (AI 2, P2): 16m behind start line, lateral offset +2.6m
+      // Slot 2 (AI 3, P3): 24m behind start line, lateral offset -2.6m
+      // Slot 3 (Player, P4): 32m behind start line, lateral offset +2.6m
+      // Slot 4 (AI 4, P5): 40m behind start line, lateral offset -2.6m
+      const playerDist = 32;
+      const playerProg = ((1.0 - playerDist / L) % 1.0 + 1.0) % 1.0;
+      const playerPt = this.track.spline.getPointAt(playerProg);
+      const playerTgt = this.track.spline.getTangentAt(playerProg);
+      const playerNorm = new THREE.Vector3(-playerTgt.z, 0, playerTgt.x).normalize();
+
+      this.carPosition.copy(playerPt).add(playerNorm.multiplyScalar(2.6));
+      this.carPosition.y = playerPt.y;
+      this.carHeading = Math.atan2(playerTgt.x, playerTgt.z);
+      this.lastTrackProgress = playerProg;
+      this.hasCrossedStart = false;
+
+      // Build Player F1 Car
+      this.carController = buildF1Car(this.carSpecs);
+      this.carController.carGroup.position.copy(this.carPosition);
+      this.carController.carGroup.rotation.y = this.carHeading;
+      this.scene.add(this.carController.carGroup);
+
+      // Grid configurations for 4 AI Rivals
+      const rivalGridConfigs = [
+        { rival: AI_RIVALS[0], distBack: 8, latOffset: -2.6, speedFactor: 1.02 },
+        { rival: AI_RIVALS[1], distBack: 16, latOffset: 2.6, speedFactor: 1.0 },
+        { rival: AI_RIVALS[2], distBack: 24, latOffset: -2.6, speedFactor: 0.98 },
+        { rival: AI_RIVALS[3], distBack: 40, latOffset: -2.6, speedFactor: 0.96 },
+      ];
+
+      this.aiCars = rivalGridConfigs.map((cfg) => {
+        const aiProg = ((1.0 - cfg.distBack / L) % 1.0 + 1.0) % 1.0;
+        const aiPt = this.track!.spline.getPointAt(aiProg);
+        const aiTgt = this.track!.spline.getTangentAt(aiProg);
+        const aiNorm = new THREE.Vector3(-aiTgt.z, 0, aiTgt.x).normalize();
+        const pos = aiPt.clone().add(aiNorm.multiplyScalar(cfg.latOffset));
+        pos.y = aiPt.y;
+        const heading = Math.atan2(aiTgt.x, aiTgt.z);
+
+        const aiCarSpecs: CarSpecs = {
+          id: cfg.rival.id as any,
+          name: cfg.rival.name,
+          driver: cfg.rival.driver,
+          team: cfg.rival.team,
+          era: '2023',
+          primaryColor: cfg.rival.primaryColor,
+          secondaryColor: cfg.rival.secondaryColor,
+          accentColor: cfg.rival.accentColor,
+          topSpeed: cfg.rival.topSpeed,
+          acceleration: cfg.rival.acceleration,
+          handling: 9,
+          powerUnit: '1.6L V6 Turbo Hybrid',
+          description: '',
+          glbFile: '',
+        };
+
+        const controller = buildF1Car(aiCarSpecs);
+        controller.carGroup.position.copy(pos);
+        controller.carGroup.rotation.y = heading;
+        this.scene.add(controller.carGroup);
+
+        return {
+          spec: cfg.rival,
+          controller,
+          position: pos,
+          heading,
+          speedKmh: 0,
+          progress: aiProg,
+          lapCount: 0,
+          lateralOffset: cfg.latOffset,
+          targetLateralOffset: cfg.latOffset,
+          personalitySpeedFactor: cfg.speedFactor,
+          laneChangeTimer: 2 + Math.random() * 3,
+          isBraking: false,
+        };
+      });
+    } else {
+      // Free Practice Mode: Single Car directly at Start Line
+      this.carPosition.copy(this.track.startPosition);
+      this.carHeading = Math.atan2(this.track.startTangent.x, this.track.startTangent.z);
+
+      this.carController = buildF1Car(this.carSpecs);
+      this.carController.carGroup.position.copy(this.carPosition);
+      this.carController.carGroup.rotation.y = this.carHeading;
+      this.scene.add(this.carController.carGroup);
+    }
 
     this.lapStartTime = performance.now();
   }
@@ -299,12 +418,21 @@ export class F1SceneManager {
   }
 
   private startCountdownIfTimeAttack(): void {
-    if (this.drivingMode === 'time_attack') {
+    if (this.drivingMode === 'race') {
+      this.raceCountdownTimer = 3.6;
+      this.raceCountdownSeconds = 3;
+      this.raceStartElapsed = false;
+      this.isRaceFinished = false;
+      this.countdownState = 'counting';
+    } else if (this.drivingMode === 'time_attack') {
       this.countdownState = 'counting';
       this.countdownTimer = 0;
       this.countdownRedCount = 0;
+      this.raceStartElapsed = false;
     } else {
       this.countdownState = 'green';
+      this.raceCountdownSeconds = null;
+      this.raceStartElapsed = true;
     }
   }
 
@@ -368,8 +496,50 @@ export class F1SceneManager {
   private updatePhysics(delta: number): void {
     if (!this.track || !this.carController) return;
 
+    // 1. Race Starting Lights Countdown (3, 2, 1, ¡LARGADA!)
+    if (this.drivingMode === 'race' && !this.raceStartElapsed) {
+      this.raceCountdownTimer -= delta;
+
+      if (this.raceCountdownTimer > 2.5) {
+        if (this.raceCountdownSeconds !== 3) {
+          this.raceCountdownSeconds = 3;
+          audioManager.playBeep(440, 0.15);
+          triggerHaptic(30);
+        }
+      } else if (this.raceCountdownTimer > 1.5) {
+        if (this.raceCountdownSeconds !== 2) {
+          this.raceCountdownSeconds = 2;
+          audioManager.playBeep(440, 0.15);
+          triggerHaptic(30);
+        }
+      } else if (this.raceCountdownTimer > 0.5) {
+        if (this.raceCountdownSeconds !== 1) {
+          this.raceCountdownSeconds = 1;
+          audioManager.playBeep(440, 0.15);
+          triggerHaptic(30);
+        }
+      } else if (this.raceCountdownTimer > 0.0) {
+        if (this.raceCountdownSeconds !== 0) {
+          this.raceCountdownSeconds = 0; // GREEN FLAG / LARGADA
+          audioManager.playBeep(880, 0.35);
+          triggerHaptic([60, 40, 100]);
+        }
+      } else {
+        this.raceCountdownSeconds = null;
+        this.raceStartElapsed = true;
+        this.lapStartTime = performance.now();
+      }
+
+      this.currentSpeedKmh = 0;
+      this.calculateGearAndRpm();
+      for (const ai of this.aiCars) {
+        ai.speedKmh = 0;
+      }
+      return;
+    }
+
     // Starting Countdown logic for Time Attack
-    if (this.countdownState === 'counting') {
+    if (this.drivingMode === 'time_attack' && this.countdownState === 'counting') {
       this.countdownTimer += delta;
       const step = Math.floor(this.countdownTimer / 0.8);
       if (step !== this.countdownRedCount && step <= 5) {
@@ -570,7 +740,170 @@ export class F1SceneManager {
     // Update wheels and DRS flap
     this.carController.update(effectiveSteer, this.currentSpeedKmh, delta, effectiveBrake > 0.4, this.drsActive);
 
-    // 3. Lap Timing & Sector Detection
+    // 4. AI Opponents Kinematics & Behavior in Race Mode
+    if (this.drivingMode === 'race' && this.raceStartElapsed && this.track) {
+      const trackLen = this.track.totalLength || 5000;
+
+      for (const ai of this.aiCars) {
+        const tAhead = (ai.progress + 0.018) % 1.0;
+        const tgtNow = this.track.spline.getTangentAt(ai.progress);
+        const tgtAhead = this.track.spline.getTangentAt(tAhead);
+        const curveAngle = tgtNow.angleTo(tgtAhead);
+
+        let targetSpeedKmh = (ai.spec.topSpeed - 18) * ai.personalitySpeedFactor;
+        if (curveAngle > 0.22) {
+          targetSpeedKmh = Math.min(targetSpeedKmh, 130 + (1 - curveAngle) * 55 * ai.spec.aggression);
+        } else if (curveAngle > 0.12) {
+          targetSpeedKmh = Math.min(targetSpeedKmh, 210 * ai.personalitySpeedFactor);
+        }
+
+        if (ai.speedKmh < targetSpeedKmh) {
+          const aiPower = Math.max(0.35, 1.0 - (ai.speedKmh / ai.spec.topSpeed) * 0.55);
+          ai.speedKmh += (44.0 * ai.spec.aggression) * aiPower * delta * 3.6;
+          ai.isBraking = false;
+        } else if (ai.speedKmh > targetSpeedKmh + 10) {
+          ai.speedKmh = Math.max(targetSpeedKmh, ai.speedKmh - 120 * delta);
+          ai.isBraking = true;
+        } else {
+          ai.isBraking = false;
+        }
+        ai.speedKmh = Math.max(0, Math.min(ai.spec.topSpeed, ai.speedKmh));
+
+        ai.laneChangeTimer -= delta;
+        if (ai.laneChangeTimer <= 0) {
+          ai.laneChangeTimer = 3.5 + Math.random() * 4.0;
+          ai.targetLateralOffset = (Math.random() - 0.5) * 5.2;
+        }
+        ai.lateralOffset = THREE.MathUtils.damp(ai.lateralOffset, ai.targetLateralOffset, 1.6, delta);
+
+        const aiSpeedMps = (ai.speedKmh * 1000) / 3600;
+        const dProg = (aiSpeedMps * delta) / trackLen;
+        const prevProg = ai.progress;
+        ai.progress = (ai.progress + dProg) % 1.0;
+
+        if (prevProg > 0.85 && ai.progress < 0.15) {
+          ai.lapCount++;
+        }
+
+        const pt = this.track.spline.getPointAt(ai.progress);
+        const tgt = this.track.spline.getTangentAt(ai.progress);
+        const norm = new THREE.Vector3(-tgt.z, 0, tgt.x).normalize();
+
+        ai.position.copy(pt).add(norm.multiplyScalar(ai.lateralOffset));
+        ai.position.y = pt.y;
+        ai.heading = Math.atan2(tgt.x, tgt.z);
+
+        ai.controller.carGroup.position.copy(ai.position);
+        ai.controller.carGroup.rotation.y = ai.heading;
+        ai.controller.update(0, ai.speedKmh, delta, ai.isBraking, false);
+      }
+
+      // 5. CAR-TO-CAR COLLISIONS (Player <-> AI and AI <-> AI)
+      const colRadius = 2.4;
+
+      // Player <-> AI Collisions
+      for (const ai of this.aiCars) {
+        const dx = this.carPosition.x - ai.position.x;
+        const dz = this.carPosition.z - ai.position.z;
+        const dist = Math.hypot(dx, dz);
+
+        if (dist < colRadius && dist > 0.001) {
+          const overlap = colRadius - dist;
+          const nx = dx / dist;
+          const nz = dz / dist;
+
+          // Push both cars apart proportionally
+          this.carPosition.x += nx * overlap * 0.55;
+          this.carPosition.z += nz * overlap * 0.55;
+          ai.position.x -= nx * overlap * 0.55;
+          ai.position.z -= nz * overlap * 0.55;
+          ai.controller.carGroup.position.copy(ai.position);
+
+          // Kinetic momentum transfer: speed loss on impact for both cars
+          this.currentSpeedKmh *= 0.84;
+          ai.speedKmh *= 0.84;
+
+          // Steering deflection
+          this.carHeading += nx * 0.05;
+
+          // Audio impact thud and haptic vibration
+          audioManager.playImpactSound();
+          triggerHaptic([60, 40, 90]);
+        }
+      }
+
+      // AI <-> AI Collisions
+      for (let i = 0; i < this.aiCars.length; i++) {
+        for (let j = i + 1; j < this.aiCars.length; j++) {
+          const a = this.aiCars[i];
+          const b = this.aiCars[j];
+          const dxi = a.position.x - b.position.x;
+          const dzi = a.position.z - b.position.z;
+          const d = Math.hypot(dxi, dzi);
+
+          if (d < colRadius && d > 0.001) {
+            const ov = colRadius - d;
+            const nxi = dxi / d;
+            const nzi = dzi / d;
+            a.position.x += nxi * ov * 0.5;
+            a.position.z += nzi * ov * 0.5;
+            b.position.x -= nxi * ov * 0.5;
+            b.position.z -= nzi * ov * 0.5;
+            a.speedKmh *= 0.88;
+            b.speedKmh *= 0.88;
+            a.controller.carGroup.position.copy(a.position);
+            b.controller.carGroup.position.copy(b.position);
+          }
+        }
+      }
+
+      // 6. Real-time Race Standings & P1-P5 Calculation
+      const allEntrants = [
+        {
+          isPlayer: true,
+          driver: `${this.carSpecs.driver} (Tú)`,
+          team: this.carSpecs.team,
+          teamColor: this.carSpecs.primaryColor,
+          score: this.lapCount + trackInfo.progress,
+          lapCount: this.lapCount,
+        },
+        ...this.aiCars.map((ai) => ({
+          isPlayer: false,
+          driver: ai.spec.driver,
+          team: ai.spec.team,
+          teamColor: ai.spec.primaryColor,
+          score: ai.lapCount + ai.progress,
+          lapCount: ai.lapCount,
+        })),
+      ];
+
+      allEntrants.sort((a, b) => b.score - a.score);
+      const playerIdx = allEntrants.findIndex((c) => c.isPlayer);
+      this.racePosition = playerIdx + 1;
+
+      const leaderScore = allEntrants[0].score;
+      this.raceStandings = allEntrants.map((car, idx) => {
+        const gapScore = leaderScore - car.score;
+        const gapSec = (gapScore * (trackLen / 78)).toFixed(1);
+        return {
+          position: idx + 1,
+          driver: car.driver,
+          team: car.team,
+          teamColor: car.teamColor,
+          isPlayer: car.isPlayer,
+          gap: idx === 0 ? 'LÍDER' : `+${gapSec}s`,
+          lapsCompleted: car.lapCount,
+        };
+      });
+
+      // Check Race Completion (3 laps)
+      if (this.lapCount >= this.raceLapsTotal && !this.isRaceFinished) {
+        this.isRaceFinished = true;
+        triggerHaptic([80, 50, 150]);
+      }
+    }
+
+    // 7. Lap Timing & Sector Detection
     this.updateLapTiming(trackInfo.progress);
   }
 
@@ -632,6 +965,13 @@ export class F1SceneManager {
         if (isBest) {
           this.bestLapTime = completedLapTime;
         }
+
+        // Record to session lap history
+        this.lapHistory.push({
+          lapNumber: this.lapCount,
+          time: completedLapTime,
+          isBest,
+        });
 
         // Trigger lap completed event
         this.callbacks.onLapCompleted(completedLapTime, isBest, this.lapCount);
@@ -753,6 +1093,15 @@ export class F1SceneManager {
       isOffTrack: trackInfo ? trackInfo.isOffTrack : false,
       drsAvailable: this.drsAvailable,
       drsActive: this.drsActive,
+      // Race mode & Lap History telemetry
+      racePosition: this.racePosition,
+      totalRaceCars: 5,
+      raceCurrentLap: Math.min(this.raceLapsTotal, this.lapCount + 1),
+      raceLapsTotal: this.raceLapsTotal,
+      countdownSeconds: this.raceCountdownSeconds,
+      isRaceFinished: this.isRaceFinished,
+      raceStandings: this.raceStandings,
+      lapHistory: [...this.lapHistory],
     });
   }
 
@@ -808,12 +1157,54 @@ export class F1SceneManager {
 
   public resetCarToStart(): void {
     if (!this.track || !this.carController) return;
-    this.carPosition.copy(this.track.startPosition);
-    this.carHeading = Math.atan2(this.track.startTangent.x, this.track.startTangent.z);
+    const L = this.track.totalLength || 5000;
+
+    if (this.drivingMode === 'race') {
+      const playerDist = 32;
+      const playerProg = ((1.0 - playerDist / L) % 1.0 + 1.0) % 1.0;
+      const playerPt = this.track.spline.getPointAt(playerProg);
+      const playerTgt = this.track.spline.getTangentAt(playerProg);
+      const playerNorm = new THREE.Vector3(-playerTgt.z, 0, playerTgt.x).normalize();
+
+      this.carPosition.copy(playerPt).add(playerNorm.multiplyScalar(2.6));
+      this.carPosition.y = playerPt.y;
+      this.carHeading = Math.atan2(playerTgt.x, playerTgt.z);
+      this.lastTrackProgress = playerProg;
+      this.hasCrossedStart = false;
+
+      // Reset AI rivals back to their grid slots
+      const rivalGridDistances = [8, 16, 24, 40];
+      const rivalGridOffsets = [-2.6, 2.6, -2.6, -2.6];
+      this.aiCars.forEach((ai, idx) => {
+        const d = rivalGridDistances[idx];
+        const lat = rivalGridOffsets[idx];
+        const prog = ((1.0 - d / L) % 1.0 + 1.0) % 1.0;
+        const pt = this.track!.spline.getPointAt(prog);
+        const tgt = this.track!.spline.getTangentAt(prog);
+        const norm = new THREE.Vector3(-tgt.z, 0, tgt.x).normalize();
+        ai.progress = prog;
+        ai.lapCount = 0;
+        ai.speedKmh = 0;
+        ai.lateralOffset = lat;
+        ai.position.copy(pt).add(norm.multiplyScalar(lat));
+        ai.position.y = pt.y;
+        ai.heading = Math.atan2(tgt.x, tgt.z);
+        ai.controller.carGroup.position.copy(ai.position);
+        ai.controller.carGroup.rotation.set(0, ai.heading, 0);
+      });
+    } else {
+      this.carPosition.copy(this.track.startPosition);
+      this.carHeading = Math.atan2(this.track.startTangent.x, this.track.startTangent.z);
+      this.lastTrackProgress = 0;
+      this.hasCrossedStart = false;
+    }
+
     this.currentSpeedKmh = 0;
     this.currentGear = 1;
     this.throttleInput = 0;
     this.brakeInput = 0;
+    this.lapCount = 0;
+    this.isRaceFinished = false;
     this.carController.carGroup.position.copy(this.carPosition);
     this.carController.carGroup.rotation.set(0, this.carHeading, 0);
     this.startCountdownIfTimeAttack();
@@ -828,6 +1219,12 @@ export class F1SceneManager {
     this.container.removeEventListener('pointerdown', this.onPointerDown);
 
     if (this.carController) this.carController.dispose();
+    for (const ai of this.aiCars) {
+      ai.controller.dispose();
+      this.scene.remove(ai.controller.carGroup);
+    }
+    this.aiCars = [];
+
     if (this.track) this.track.dispose();
     this.disableCameraBackground();
     this.renderer.dispose();

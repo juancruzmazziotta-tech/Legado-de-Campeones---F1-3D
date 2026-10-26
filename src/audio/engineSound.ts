@@ -312,6 +312,33 @@ export class F1SoundEngine {
     return this.isMuted;
   }
 
+  public playImpactSound(): void {
+    if (!this.ctx || this.isMuted) return;
+    try {
+      const now = this.ctx.currentTime;
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(160, now);
+      osc.frequency.exponentialRampToValueAtTime(35, now + 0.15);
+
+      gain.gain.setValueAtTime(0.5, now);
+      gain.gain.exponentialRampToValueAtTime(0.01, now + 0.18);
+
+      osc.connect(gain);
+      if (this.masterGain) {
+        gain.connect(this.masterGain);
+      } else {
+        gain.connect(this.ctx.destination);
+      }
+
+      osc.start(now);
+      osc.stop(now + 0.2);
+    } catch {
+      // Ignore
+    }
+  }
+
   public dispose(): void {
     if (this.micStream) {
       this.micStream.getTracks().forEach((track) => track.stop());

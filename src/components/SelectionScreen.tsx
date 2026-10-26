@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { CARS_DATA, CIRCUITS_DATA } from '../data/f1Data';
 import { CarSpecs, CircuitId, ControlMode, CameraMode, DrivingMode } from '../types/game';
-import { ArrowLeft, Play, Eye, Camera, Gauge, Zap, Compass, Gamepad2 } from 'lucide-react';
+import { ArrowLeft, Play, Eye, Camera, Gauge, Zap, Compass, Gamepad2, Flag, Timer } from 'lucide-react';
 import { audioManager, triggerHaptic } from '../audio/engineSound';
 
 interface SelectionScreenProps {
@@ -90,6 +90,86 @@ export const SelectionScreen: React.FC<SelectionScreenProps> = ({ onConfirm, onB
           <p className="text-xs text-white/60 mt-0.5">
             Configura tu monoplaza, circuito y modo de dirección antes de salir
           </p>
+        </div>
+
+        {/* 0. MODO DE JUEGO (PRÁCTICA LIBRE VS GRAN PREMIO CARRERA) */}
+        <div className="bg-black/75 border border-[#FF1801]/40 rounded-2xl p-4 shadow-xl backdrop-blur-md relative overflow-hidden">
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-xs font-racing font-bold text-[#FFD700] uppercase tracking-wider flex items-center gap-1.5">
+              <Flag className="w-4 h-4 text-[#FF1801]" />
+              Modo de Juego
+            </span>
+            <span className="text-[10px] font-racing font-bold px-2 py-0.5 rounded bg-sky-500/20 text-sky-400 border border-sky-500/30">
+              2 Modalidades
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+            {/* Modo 1: Práctica Libre (Solitario) */}
+            <button
+              type="button"
+              onClick={() => {
+                triggerHaptic(20);
+                setSelectedDrivingMode('practice');
+              }}
+              className={`p-3.5 rounded-xl border flex items-center gap-3 transition cursor-pointer text-left ${
+                selectedDrivingMode === 'practice'
+                  ? 'bg-[#FF1801]/25 border-[#FF1801] text-white ring-2 ring-[#FF1801]/60 shadow-lg shadow-[#FF1801]/20'
+                  : 'bg-white/5 border-white/10 text-white/70 hover:text-white hover:bg-white/10'
+              }`}
+            >
+              <div
+                className={`p-2.5 rounded-xl shrink-0 ${
+                  selectedDrivingMode === 'practice' ? 'bg-[#FF1801] text-white' : 'bg-white/10 text-white/60'
+                }`}
+              >
+                <Timer className="w-6 h-6" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <span className="text-xs sm:text-sm font-racing font-bold text-white block">
+                  ⏱️ Práctica Libre (Solitario)
+                </span>
+                <p className="text-[11px] text-white/70 mt-1 leading-snug">
+                  Gira vueltas ilimitadas para batir tu récord y consulta tu tabla de tiempos en tiempo real.
+                </p>
+              </div>
+            </button>
+
+            {/* Modo 2: Gran Premio (Carrera vs 4 Autos IA) */}
+            <button
+              type="button"
+              onClick={() => {
+                triggerHaptic(20);
+                setSelectedDrivingMode('race');
+              }}
+              className={`p-3.5 rounded-xl border flex items-center gap-3 transition cursor-pointer text-left ${
+                selectedDrivingMode === 'race'
+                  ? 'bg-[#FF1801]/25 border-[#FF1801] text-white ring-2 ring-[#FF1801]/60 shadow-lg shadow-[#FF1801]/20'
+                  : 'bg-white/5 border-white/10 text-white/70 hover:text-white hover:bg-white/10'
+              }`}
+            >
+              <div
+                className={`p-2.5 rounded-xl shrink-0 ${
+                  selectedDrivingMode === 'race' ? 'bg-[#FF1801] text-white' : 'bg-white/10 text-white/60'
+                }`}
+              >
+                <Flag className="w-6 h-6 text-[#FFD700]" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="text-xs sm:text-sm font-racing font-bold text-white">
+                    🏁 Gran Premio (vs 4 Autos IA)
+                  </span>
+                  <span className="text-[9px] bg-[#FFD700] text-black font-extrabold px-1.5 py-0.2 rounded uppercase">
+                    3 Vueltas
+                  </span>
+                </div>
+                <p className="text-[11px] text-white/70 mt-1 leading-snug">
+                  Largada con semáforo (3s), 5 monoplazas con colisiones físicas reales y podio final.
+                </p>
+              </div>
+            </button>
+          </div>
         </div>
 
         {/* 1. MODO DE CONTROL (GIROSCOPIO VS TÁCTIL) - PROMINENT FOR MOBILE USERS */}
