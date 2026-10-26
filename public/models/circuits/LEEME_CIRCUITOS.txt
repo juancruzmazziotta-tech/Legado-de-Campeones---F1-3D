@@ -1,0 +1,16 @@
+=============================================================
+ARQUITECTURA DE CIRCUITOS 3D F1 (GLTF / GLB)
+=============================================================
+
+Esta carpeta (/public/models/circuits/) almacena los modelos 3D y trazados de los circuitos:
+
+1. imola_circuit_2024_layout.glb
+   -> Autodromo Enzo e Dino Ferrari (Ímola, Italia) - 4.909 km
+
+2. circuit_de_spa-francorchamps_2022_layout.glb
+   -> Circuit de Spa-Francorchamps (Bélgica) - 7.004 km
+
+CÓMO FUNCIONA EL PIPELINE:
+- El simulador renderiza el asfalto PBR, pianos tridimensionales y el suelo verde plano (Y=0).
+- Si el usuario sube el archivo .glb de la pista o entorno a esta carpeta, el motor lo acopla automáticamente alineando su centro y cota de suelo.
+- Si no está presente, el sistema procedural Catmull-Rom genera el trazado cerrado con telemetría de sectores y zonas DRS de 60 FPS.

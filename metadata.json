@@ -1,0 +1,11 @@
+{
+  "name": "Legado de Campeones - F1 3D Mobile Experience",
+  "description": "Experiencia 3D inmersiva para mobile con simulación de Fórmula 1, vista de piloto cockpit y perseguidora, sensores giroscópicos, audio de motor procedural y telemetría.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "accelerometer",
+    "gyroscope"
+  ],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,16 @@
+=============================================================
+ARQUITECTURA DE MODELOS 3D DE MONOPLAZAS F1 (GLTF / GLB)
+=============================================================
+
+Esta carpeta (/public/models/cars/) almacena los modelos 3D de los monoplazas:
+
+1. f1_2022_generic.glb
+   -> Monoplaza reglamentario 2022 de Efecto Suelo con alerones curvados, halo y túneles venturi.
+
+2. 2004_ferrari_f2004.glb
+   -> Ferrari F2004 de Michael Schumacher (Era V10 atmosférico).
+
+CÓMO FUNCIONA EL PIPELINE:
+- El motor Three.js verifica si el archivo .glb existe y tiene contenido válido (>200 bytes).
+- Si el archivo .glb está presente: se carga con GLTFLoader, se centra automáticamente en los ejes X/Z, se asienta la base a Y=0 (al ras del asfalto) y se normaliza su escala a 5.4 metros de longitud estándar de F1.
+- Si el archivo aún no ha sido cargado o es un archivo vacío/placeholder: la aplicación activa de forma fluida el modelo procedimental de alta definición (fibra de carbono, halo, alerón DRS animado, cockpit y neumáticos Pirelli P-Zero).
