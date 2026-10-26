@@ -413,11 +413,44 @@ export class F1SceneManager {
     let effectiveSteer = this.steerInput !== 0 ? this.steerInput : this.smoothedKeyboardSteer;
 
     if (this.controlMode === 'gyro') {
-      const isLandscape = window.innerWidth > window.innerHeight;
-      const targetTilt = isLandscape ? this.rawOrientation.beta : this.rawOrientation.gamma;
-      const clamped = Math.max(-35, Math.min(35, targetTilt));
-      this.smoothedGamma = THREE.MathUtils.damp(this.smoothedGamma, clamped / 28, 10, delta);
-      if (Math.abs(this.smoothedGamma) > 0.03) {
+      const deg2rad = Math.PI / 180;
+      const b = (this.rawOrientation.beta || 0) * deg2rad;
+      const g = (this.rawOrientation.gamma || 0) * deg2rad;
+
+      // Detect screen orientation angle (0, 90, 180, 270)
+      let screenAngle = 0;
+      if (typeof window !== 'undefined') {
+        if (window.screen?.orientation?.angle !== undefined) {
+          screenAngle = window.screen.orientation.angle;
+        } else if (typeof (window as unknown as { orientation?: number }).orientation === 'number') {
+          screenAngle = (window as unknown as { orientation: number }).orientation;
+        } else if (window.innerWidth > window.innerHeight) {
+          screenAngle = 90; // Default landscape assumption
+        }
+      }
+      const th = screenAngle * deg2rad;
+
+      // 3D gravity vector components in device coordinates:
+      // gx = -sin(gamma) * cos(beta)
+      // gy = sin(beta)
+      const gx = -Math.sin(g) * Math.cos(b);
+      const gy = Math.sin(b);
+
+      // Horizontal tilt in screen coordinates
+      const screenGx = gx * Math.cos(th) - gy * Math.sin(th);
+
+      // Rotating phone right -> screenGx is negative -> steer is positive (turns right)
+      // Rotating phone left -> screenGx is positive -> steer is negative (turns left)
+      const rawSteer = -screenGx * 2.2;
+      const clampedSteer = Math.max(-1.0, Math.min(1.0, rawSteer));
+      const deadzoneSteer = Math.abs(clampedSteer) < 0.03 ? 0 : clampedSteer;
+
+      this.smoothedGamma = THREE.MathUtils.damp(this.smoothedGamma, deadzoneSteer, 14, delta);
+
+      // Touch input takes immediate priority if actively dragging the wheel, otherwise gyro steers!
+      if (this.steerInput !== 0) {
+        effectiveSteer = this.steerInput;
+      } else {
         effectiveSteer = this.smoothedGamma;
       }
     }

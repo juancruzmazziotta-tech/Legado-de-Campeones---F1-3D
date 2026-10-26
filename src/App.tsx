@@ -199,6 +199,15 @@ export default function App() {
     setScreen('selection');
   };
 
+  // Toggle Control Mode (Gyro / Touch)
+  const handleToggleControlMode = () => {
+    const next: ControlMode = controlMode === 'gyro' ? 'touch' : 'gyro';
+    setControlMode(next);
+    if (sceneManagerRef.current) {
+      sceneManagerRef.current.setControlMode(next);
+    }
+  };
+
   // Toggle Mic
   const handleToggleMic = async () => {
     if (isMicActive) {
@@ -243,7 +252,7 @@ export default function App() {
   const currentCircuitInfo = CIRCUITS_DATA.find((c) => c.id === selectedCircuit) || CIRCUITS_DATA[0];
 
   return (
-    <div className="relative w-full h-full min-h-screen bg-[#121212] overflow-hidden select-none font-body">
+    <div className={`relative w-full min-h-[100dvh] bg-[#121212] select-none font-body ${screen === 'racing' ? 'h-full overflow-hidden' : 'overflow-y-auto overflow-x-hidden'}`}>
       {/* 3D WebGL Canvas Container (Pinned full viewport) */}
       <div
         ref={canvasMountRef}
@@ -279,6 +288,7 @@ export default function App() {
           isMicActive={isMicActive}
           isCameraBgActive={isCameraBgActive}
           onSetCameraMode={handleSetCameraMode}
+          onToggleControlMode={handleToggleControlMode}
           onToggleDRS={handleToggleDRS}
           onRestartLap={handleRestartLap}
           onRecoverToTrack={handleRecoverToTrack}

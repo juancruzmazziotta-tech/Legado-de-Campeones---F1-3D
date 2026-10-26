@@ -37,6 +37,7 @@ interface RacingHUDProps {
   isMicActive: boolean;
   isCameraBgActive: boolean;
   onSetCameraMode: (mode: CameraMode) => void;
+  onToggleControlMode?: () => void;
   onToggleDRS: () => void;
   onRestartLap: () => void;
   onRecoverToTrack?: () => void;
@@ -60,6 +61,7 @@ export const RacingHUD: React.FC<RacingHUDProps> = ({
   audioMetrics,
   isMicActive,
   onSetCameraMode,
+  onToggleControlMode,
   onToggleDRS,
   onRestartLap,
   onRecoverToTrack,
@@ -169,6 +171,25 @@ export const RacingHUD: React.FC<RacingHUDProps> = ({
 
         {/* Top Right: Compact Action Buttons (Reiniciar, Pista, Cámara, Sonido, Salir) */}
         <div className="flex items-center gap-1 bg-black/75 border border-white/10 p-1 rounded-full backdrop-blur-md shadow-lg">
+          {/* Gyro / Touch Control Mode Toggle */}
+          {onToggleControlMode && (
+            <button
+              onClick={() => {
+                triggerHaptic(20);
+                onToggleControlMode();
+              }}
+              title={controlMode === 'gyro' ? 'Modo Giroscopio (Toca para cambiar a táctil)' : 'Modo Táctil (Toca para activar Giroscopio)'}
+              className={`px-2.5 py-1 rounded-full text-[11px] font-racing font-bold transition flex items-center gap-1 cursor-pointer border ${
+                controlMode === 'gyro'
+                  ? 'bg-emerald-500/25 border-emerald-400 text-emerald-400 shadow-[0_0_8px_#10b981]'
+                  : 'bg-white/5 border-white/10 text-white/60 hover:text-white'
+              }`}
+            >
+              <Compass className="w-3.5 h-3.5" />
+              <span>{controlMode === 'gyro' ? 'GIRO' : 'TÁCTIL'}</span>
+            </button>
+          )}
+
           {/* Recover / Reincorporar Button */}
           {onRecoverToTrack && (
             <button
@@ -318,54 +339,54 @@ export const RacingHUD: React.FC<RacingHUDProps> = ({
         {/* LADO IZQUIERDO: VOLANTE TÁCTIL (Donde antes estaba el freno) */}
         {/* ------------------------------------------------------------ */}
         <div className="pointer-events-auto flex flex-col items-center">
-          {controlMode === 'touch' ? (
-            <div
-              ref={wheelRef}
-              onPointerDown={(e) => {
-                (e.target as HTMLElement).setPointerCapture(e.pointerId);
-                triggerHaptic(15);
-                handleWheelStart(e.clientX, e.clientY);
-              }}
-              onPointerMove={(e) => {
-                if (isDraggingWheel.current) {
-                  updateWheelAngle(e.clientX, e.clientY);
-                }
-              }}
-              onPointerUp={(e) => {
-                try {
-                  (e.target as HTMLElement).releasePointerCapture(e.pointerId);
-                } catch {
-                  // Ignore
-                }
-                handleWheelEnd();
-              }}
-              onPointerCancel={handleWheelEnd}
-              className="relative w-28 h-28 sm:w-36 sm:h-36 rounded-full border-4 border-white/25 bg-black/75 backdrop-blur-md flex items-center justify-center shadow-2xl cursor-grab active:cursor-grabbing select-none touch-none"
-              style={{
-                transform: `rotate(${steeringTouchAngle}deg)`,
-                transition: isDraggingWheel.current ? 'none' : 'transform 0.15s ease-out',
-              }}
-              aria-label="Volante de dirección táctil"
-            >
-              {/* Rim Details */}
-              <div className="absolute inset-1.5 rounded-full border border-white/10" />
-              {/* Top Red Center Strip */}
-              <div className="absolute top-0 w-3 h-4 bg-[#FF1801] rounded-b-sm shadow" />
-              {/* Horizontal Spoke */}
-              <div className="absolute w-full h-3.5 bg-white/20" />
-              {/* Vertical Spoke */}
-              <div className="absolute h-full w-3.5 bg-white/20" />
-              {/* Hub Cap with F1 */}
-              <div className="w-10 h-10 rounded-full bg-[#181818] border-2 border-[#FFD700] flex items-center justify-center z-10 shadow-lg">
-                <span className="font-racing font-black text-xs text-white">F1</span>
-              </div>
-            </div>
-          ) : (
-            <div className="flex items-center gap-1.5 bg-black/60 px-3 py-2 rounded-xl border border-white/10 text-xs font-racing text-white/80">
-              <Compass className="w-4 h-4 text-[#FF1801]" />
-              <span>Giroscopio</span>
+          {controlMode === 'gyro' && (
+            <div className="flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-500/25 border border-emerald-400 text-[10px] font-racing font-bold text-emerald-400 mb-1.5 shadow-sm">
+              <Compass className="w-3 h-3 text-emerald-400" />
+              <span>VOLANTE GIRO</span>
             </div>
           )}
+
+          <div
+            ref={wheelRef}
+            onPointerDown={(e) => {
+              (e.target as HTMLElement).setPointerCapture(e.pointerId);
+              triggerHaptic(15);
+              handleWheelStart(e.clientX, e.clientY);
+            }}
+            onPointerMove={(e) => {
+              if (isDraggingWheel.current) {
+                updateWheelAngle(e.clientX, e.clientY);
+              }
+            }}
+            onPointerUp={(e) => {
+              try {
+                (e.target as HTMLElement).releasePointerCapture(e.pointerId);
+              } catch {
+                // Ignore
+              }
+              handleWheelEnd();
+            }}
+            onPointerCancel={handleWheelEnd}
+            className="relative w-28 h-28 sm:w-36 sm:h-36 rounded-full border-4 border-white/25 bg-black/75 backdrop-blur-md flex items-center justify-center shadow-2xl cursor-grab active:cursor-grabbing select-none touch-none"
+            style={{
+              transform: `rotate(${isDraggingWheel.current ? steeringTouchAngle : (telemetry.steerAngle * 80)}deg)`,
+              transition: isDraggingWheel.current ? 'none' : 'transform 0.12s ease-out',
+            }}
+            aria-label="Volante de dirección F1"
+          >
+            {/* Rim Details */}
+            <div className="absolute inset-1.5 rounded-full border border-white/10" />
+            {/* Top Red Center Strip */}
+            <div className="absolute top-0 w-3 h-4 bg-[#FF1801] rounded-b-sm shadow" />
+            {/* Horizontal Spoke */}
+            <div className="absolute w-full h-3.5 bg-white/20" />
+            {/* Vertical Spoke */}
+            <div className="absolute h-full w-3.5 bg-white/20" />
+            {/* Hub Cap with F1 */}
+            <div className="w-10 h-10 rounded-full bg-[#181818] border-2 border-[#FFD700] flex items-center justify-center z-10 shadow-lg">
+              <span className="font-racing font-black text-xs text-white">F1</span>
+            </div>
+          </div>
         </div>
 
         {/* ------------------------------------------------------------ */}

@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
 import { CARS_DATA, CIRCUITS_DATA } from '../data/f1Data';
 import { CarSpecs, CircuitId, ControlMode, CameraMode, DrivingMode } from '../types/game';
-import { ArrowLeft, Play, Eye, Camera, Gauge, Zap } from 'lucide-react';
-import { triggerHaptic } from '../audio/engineSound';
+import { ArrowLeft, Play, Eye, Camera, Gauge, Zap, Compass, Gamepad2 } from 'lucide-react';
+import { audioManager, triggerHaptic } from '../audio/engineSound';
 
 interface SelectionScreenProps {
   onConfirm: (config: {
@@ -19,11 +19,31 @@ export const SelectionScreen: React.FC<SelectionScreenProps> = ({ onConfirm, onB
   const [selectedCar, setSelectedCar] = useState<CarSpecs>(CARS_DATA[0]); // F1 2022
   const [selectedCircuit, setSelectedCircuit] = useState<CircuitId>(CIRCUITS_DATA[0].id); // Imola
   const [selectedCamera, setSelectedCamera] = useState<CameraMode>('cockpit');
-  const [selectedControl, setSelectedControl] = useState<ControlMode>('touch');
+  // Detect if touch/mobile to default to gyro
+  const isTouchDevice = typeof window !== 'undefined' && ('ontouchstart' in window || navigator.maxTouchPoints > 0);
+  const [selectedControl, setSelectedControl] = useState<ControlMode>(isTouchDevice ? 'gyro' : 'touch');
   const [selectedDrivingMode, setSelectedDrivingMode] = useState<DrivingMode>('practice');
+  const [isStarting, setIsStarting] = useState<boolean>(false);
 
-  const handleStartDriving = () => {
+  const handleStartDriving = async () => {
     triggerHaptic([40, 20]);
+    setIsStarting(true);
+
+    // 1. Request DeviceOrientation permission on iOS 13+ (must happen on user click)
+    if (
+      typeof window !== 'undefined' &&
+      typeof (DeviceOrientationEvent as unknown as { requestPermission?: () => Promise<string> }).requestPermission === 'function'
+    ) {
+      try {
+        await (DeviceOrientationEvent as unknown as { requestPermission: () => Promise<string> }).requestPermission();
+      } catch (err) {
+        console.warn('DeviceOrientation permission request error:', err);
+      }
+    }
+
+    // 2. Initialize Web Audio Context
+    await audioManager.initAudio();
+
     onConfirm({
       car: selectedCar,
       circuit: selectedCircuit,
@@ -34,43 +54,127 @@ export const SelectionScreen: React.FC<SelectionScreenProps> = ({ onConfirm, onB
   };
 
   return (
-    <div className="relative w-full h-full min-h-screen bg-[#0e0e10] bg-carbon flex flex-col justify-between text-white overflow-hidden select-none">
+    <div className="relative w-full min-h-[100dvh] bg-[#0e0e10] bg-carbon flex flex-col text-white overflow-y-auto overflow-x-hidden touch-pan-y select-none">
       {/* Top Header */}
-      <header className="w-full max-w-2xl mx-auto px-4 pt-5 pb-2 flex items-center justify-between z-10">
-        <button
-          onClick={() => {
-            triggerHaptic(15);
-            onBack();
-          }}
-          className="p-2.5 rounded-full bg-white/10 hover:bg-white/15 border border-white/10 text-white/80 transition"
-          aria-label="Volver"
-        >
-          <ArrowLeft className="w-5 h-5" />
-        </button>
+      <header className="sticky top-0 left-0 right-0 w-full bg-[#0e0e10]/90 backdrop-blur-md border-b border-white/10 z-20">
+        <div className="max-w-2xl mx-auto px-4 py-3 flex items-center justify-between">
+          <button
+            onClick={() => {
+              triggerHaptic(15);
+              onBack();
+            }}
+            className="p-2 rounded-full bg-white/10 hover:bg-white/15 border border-white/10 text-white/80 transition cursor-pointer"
+            aria-label="Volver"
+          >
+            <ArrowLeft className="w-5 h-5" />
+          </button>
 
-        <div className="flex items-center gap-2">
-          <div className="w-2.5 h-2.5 bg-[#FF1801] rounded-full animate-pulse" />
-          <span className="font-racing text-xs tracking-widest text-[#FF1801] uppercase font-bold">
-            Configuración de Carrera
-          </span>
+          <div className="flex items-center gap-2">
+            <div className="w-2.5 h-2.5 bg-[#FF1801] rounded-full animate-pulse" />
+            <span className="font-racing text-xs tracking-widest text-[#FF1801] uppercase font-bold">
+              Configuración de Carrera
+            </span>
+          </div>
+
+          <div className="w-9" />
         </div>
-
-        <div className="w-9" />
       </header>
 
-      {/* Main Single-Screen Content */}
-      <main className="w-full max-w-2xl mx-auto flex-1 px-4 py-3 flex flex-col justify-center gap-4 overflow-y-auto z-10">
+      {/* Main Scrollable Content */}
+      <main className="w-full max-w-2xl mx-auto flex-1 px-4 py-4 flex flex-col gap-4 z-10 pb-32">
         {/* Title */}
-        <div className="text-center">
+        <div className="text-center pt-1">
           <h2 className="text-2xl sm:text-3xl font-racing font-extrabold uppercase tracking-wide">
             Preparado para la Pista
           </h2>
           <p className="text-xs text-white/60 mt-0.5">
-            Monoplaza y circuito listos para salir a rodar
+            Configura tu monoplaza, circuito y modo de dirección antes de salir
           </p>
         </div>
 
-        {/* 1. Monoplaza Card */}
+        {/* 1. MODO DE CONTROL (GIROSCOPIO VS TÁCTIL) - PROMINENT FOR MOBILE USERS */}
+        <div className="bg-black/75 border border-[#FF1801]/40 rounded-2xl p-4 shadow-xl backdrop-blur-md relative overflow-hidden">
+          <div className="absolute top-0 right-0 w-32 h-32 bg-[#FF1801]/10 rounded-full blur-2xl pointer-events-none" />
+
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-xs font-racing font-bold text-[#FFD700] uppercase tracking-wider flex items-center gap-1.5">
+              <Compass className="w-4 h-4 text-[#FF1801]" />
+              Modo de Control / Dirección
+            </span>
+            <span className="text-[10px] font-racing font-bold px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+              Sensor Smartphone
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+            {/* Gyroscope (Steering Wheel by phone rotation) */}
+            <button
+              type="button"
+              onClick={() => {
+                triggerHaptic(20);
+                setSelectedControl('gyro');
+              }}
+              className={`p-3.5 rounded-xl border flex items-center gap-3 transition cursor-pointer text-left relative ${
+                selectedControl === 'gyro'
+                  ? 'bg-[#FF1801]/25 border-[#FF1801] text-white ring-2 ring-[#FF1801]/60 shadow-lg shadow-[#FF1801]/20'
+                  : 'bg-white/5 border-white/10 text-white/70 hover:text-white hover:bg-white/10'
+              }`}
+            >
+              <div
+                className={`p-2.5 rounded-xl shrink-0 ${
+                  selectedControl === 'gyro' ? 'bg-[#FF1801] text-white' : 'bg-white/10 text-white/60'
+                }`}
+              >
+                <Compass className="w-6 h-6 animate-pulse" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="text-xs sm:text-sm font-racing font-bold text-white">
+                    Giroscopio (Volante Móvil)
+                  </span>
+                  <span className="text-[9px] bg-[#FFD700] text-black font-extrabold px-1.5 py-0.2 rounded uppercase">
+                    Recomendado
+                  </span>
+                </div>
+                <p className="text-[11px] text-white/70 mt-1 leading-snug">
+                  Gira inclinando tu teléfono hacia los lados como un volante real de F1
+                </p>
+              </div>
+            </button>
+
+            {/* Virtual Touch Steering Wheel */}
+            <button
+              type="button"
+              onClick={() => {
+                triggerHaptic(20);
+                setSelectedControl('touch');
+              }}
+              className={`p-3.5 rounded-xl border flex items-center gap-3 transition cursor-pointer text-left ${
+                selectedControl === 'touch'
+                  ? 'bg-[#FF1801]/25 border-[#FF1801] text-white ring-2 ring-[#FF1801]/60 shadow-lg shadow-[#FF1801]/20'
+                  : 'bg-white/5 border-white/10 text-white/70 hover:text-white hover:bg-white/10'
+              }`}
+            >
+              <div
+                className={`p-2.5 rounded-xl shrink-0 ${
+                  selectedControl === 'touch' ? 'bg-[#FF1801] text-white' : 'bg-white/10 text-white/60'
+                }`}
+              >
+                <Gamepad2 className="w-6 h-6" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <span className="text-xs sm:text-sm font-racing font-bold text-white block">
+                  Volante Táctil en Pantalla
+                </span>
+                <p className="text-[11px] text-white/70 mt-1 leading-snug">
+                  Controla la dirección usando el volante virtual analógico en pantalla
+                </p>
+              </div>
+            </button>
+          </div>
+        </div>
+
+        {/* 2. Monoplaza Card */}
         <div className="bg-black/60 border border-white/15 rounded-2xl p-4 shadow-xl backdrop-blur-md">
           <div className="flex items-center justify-between mb-3">
             <span className="text-xs font-racing font-bold text-[#FFD700] uppercase tracking-wider flex items-center gap-1.5">
@@ -89,7 +193,7 @@ export const SelectionScreen: React.FC<SelectionScreenProps> = ({ onConfirm, onB
               <p className="text-[11px] text-white/50 mt-1">{selectedCar.description}</p>
             </div>
 
-            {/* Quick Car Selector (if user wants to toggle between F1 2022 and F2004) */}
+            {/* Quick Car Selector */}
             {CARS_DATA.length > 1 && (
               <div className="flex sm:flex-col gap-2 shrink-0">
                 {CARS_DATA.map((car) => {
@@ -121,7 +225,7 @@ export const SelectionScreen: React.FC<SelectionScreenProps> = ({ onConfirm, onB
           </div>
         </div>
 
-        {/* 2. Circuito Card */}
+        {/* 3. Circuito Card */}
         {CIRCUITS_DATA.length > 0 && (
           <div className="bg-black/60 border border-white/15 rounded-2xl p-4 shadow-xl backdrop-blur-md">
             <div className="flex items-center justify-between mb-2">
@@ -130,7 +234,7 @@ export const SelectionScreen: React.FC<SelectionScreenProps> = ({ onConfirm, onB
                 Circuito
               </span>
               <span className="text-xs font-racing text-white/70 bg-white/10 px-2 py-0.5 rounded">
-                {CIRCUITS_DATA.find((c) => c.id === selectedCircuit)?.country || 'Italia'}
+                {CIRCUITS_DATA.find((c) => c.id === selectedCircuit)?.country || 'Bélgica'}
               </span>
             </div>
 
@@ -182,7 +286,7 @@ export const SelectionScreen: React.FC<SelectionScreenProps> = ({ onConfirm, onB
           </div>
         )}
 
-        {/* 3. Camera View Quick Toggle */}
+        {/* 4. Camera View Quick Toggle */}
         <div className="bg-black/60 border border-white/15 rounded-2xl p-3.5 backdrop-blur-md">
           <span className="text-xs font-racing font-bold text-white/80 uppercase tracking-wider block mb-2">
             Vista de Cámara
@@ -223,16 +327,19 @@ export const SelectionScreen: React.FC<SelectionScreenProps> = ({ onConfirm, onB
         </div>
       </main>
 
-      {/* Massive Primary CTA: EMPEZAR A MANEJAR */}
-      <footer className="w-full max-w-2xl mx-auto p-4 z-10">
-        <button
-          onClick={handleStartDriving}
-          className="group relative w-full py-4 px-6 rounded-2xl bg-gradient-to-r from-[#FF1801] via-[#e51500] to-[#b31000] text-white font-racing font-black text-lg uppercase tracking-widest shadow-2xl shadow-[#FF1801]/40 hover:scale-[1.01] active:scale-[0.98] transition-all flex items-center justify-center gap-3 cursor-pointer overflow-hidden"
-        >
-          <div className="absolute inset-0 w-1/2 h-full bg-white/20 skew-x-12 -translate-x-full group-hover:translate-x-[300%] transition-transform duration-1000" />
-          <Play className="w-5 h-5 fill-current text-[#FFD700]" />
-          <span>EMPEZAR A MANEJAR</span>
-        </button>
+      {/* Sticky Bottom Floating Action Bar: EMPEZAR A MANEJAR (Always accessible on any phone!) */}
+      <footer className="sticky bottom-0 left-0 right-0 w-full bg-[#0e0e10]/95 backdrop-blur-xl border-t border-white/15 p-3.5 sm:p-4 z-30 shadow-2xl">
+        <div className="max-w-2xl mx-auto">
+          <button
+            onClick={handleStartDriving}
+            disabled={isStarting}
+            className="group relative w-full py-4 px-6 rounded-2xl bg-gradient-to-r from-[#FF1801] via-[#e51500] to-[#b31000] text-white font-racing font-black text-base sm:text-lg uppercase tracking-wider shadow-2xl shadow-[#FF1801]/40 hover:scale-[1.01] active:scale-[0.98] transition-all flex items-center justify-center gap-3 cursor-pointer overflow-hidden border border-[#FF1801]/50"
+          >
+            <div className="absolute inset-0 w-1/2 h-full bg-white/20 skew-x-12 -translate-x-full group-hover:translate-x-[300%] transition-transform duration-1000" />
+            <Play className="w-5 h-5 fill-current text-[#FFD700]" />
+            <span>{isStarting ? 'INICIANDO SESIÓN...' : 'EMPEZAR A MANEJAR'}</span>
+          </button>
+        </div>
       </footer>
     </div>
   );
