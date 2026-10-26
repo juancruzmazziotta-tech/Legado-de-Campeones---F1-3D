@@ -252,11 +252,11 @@ export default function App() {
   const currentCircuitInfo = CIRCUITS_DATA.find((c) => c.id === selectedCircuit) || CIRCUITS_DATA[0];
 
   return (
-    <div className={`relative w-full min-h-[100dvh] bg-[#121212] select-none font-body ${screen === 'racing' ? 'h-full overflow-hidden' : 'overflow-y-auto overflow-x-hidden'}`}>
+    <div className={`w-full bg-[#121212] font-body ${screen === 'racing' ? 'fixed inset-0 h-full overflow-hidden select-none' : 'relative min-h-screen'}`}>
       {/* 3D WebGL Canvas Container (Pinned full viewport) */}
       <div
         ref={canvasMountRef}
-        className={`absolute inset-0 w-full h-full ${screen === 'racing' ? 'block' : 'hidden'}`}
+        className={`fixed inset-0 w-full h-full ${screen === 'racing' ? 'block' : 'hidden'}`}
       />
 
       {/* Screen 1: Welcome & Landing */}

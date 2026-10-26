@@ -54,7 +54,7 @@ export const SelectionScreen: React.FC<SelectionScreenProps> = ({ onConfirm, onB
   };
 
   return (
-    <div className="relative w-full min-h-[100dvh] bg-[#0e0e10] bg-carbon flex flex-col text-white overflow-y-auto overflow-x-hidden touch-pan-y select-none">
+    <div className="relative w-full min-h-screen bg-[#0e0e10] bg-carbon flex flex-col text-white pb-36">
       {/* Top Header */}
       <header className="sticky top-0 left-0 right-0 w-full bg-[#0e0e10]/90 backdrop-blur-md border-b border-white/10 z-20">
         <div className="max-w-2xl mx-auto px-4 py-3 flex items-center justify-between">
@@ -325,11 +325,8 @@ export const SelectionScreen: React.FC<SelectionScreenProps> = ({ onConfirm, onB
             </button>
           </div>
         </div>
-      </main>
-
-      {/* Sticky Bottom Floating Action Bar: EMPEZAR A MANEJAR (Always accessible on any phone!) */}
-      <footer className="sticky bottom-0 left-0 right-0 w-full bg-[#0e0e10]/95 backdrop-blur-xl border-t border-white/15 p-3.5 sm:p-4 z-30 shadow-2xl">
-        <div className="max-w-2xl mx-auto">
+        {/* In-flow Start Button (right below cards) */}
+        <div className="pt-2">
           <button
             onClick={handleStartDriving}
             disabled={isStarting}
@@ -340,7 +337,22 @@ export const SelectionScreen: React.FC<SelectionScreenProps> = ({ onConfirm, onB
             <span>{isStarting ? 'INICIANDO SESIÓN...' : 'EMPEZAR A MANEJAR'}</span>
           </button>
         </div>
-      </footer>
+      </main>
+
+      {/* Fixed Floating Bottom Bar: Always pinned to bottom of viewport on any device! */}
+      <div className="fixed bottom-0 left-0 right-0 w-full bg-[#0e0e10]/95 backdrop-blur-xl border-t border-white/20 p-3 sm:p-4 z-50 shadow-2xl">
+        <div className="max-w-2xl mx-auto">
+          <button
+            onClick={handleStartDriving}
+            disabled={isStarting}
+            className="group relative w-full py-3.5 sm:py-4 px-6 rounded-2xl bg-gradient-to-r from-[#FF1801] via-[#e51500] to-[#b31000] text-white font-racing font-black text-base sm:text-lg uppercase tracking-wider shadow-2xl shadow-[#FF1801]/40 hover:scale-[1.01] active:scale-[0.98] transition-all flex items-center justify-center gap-3 cursor-pointer overflow-hidden border border-[#FF1801]/50"
+          >
+            <div className="absolute inset-0 w-1/2 h-full bg-white/20 skew-x-12 -translate-x-full group-hover:translate-x-[300%] transition-transform duration-1000" />
+            <Play className="w-5 h-5 fill-current text-[#FFD700]" />
+            <span>{isStarting ? 'INICIANDO SESIÓN...' : 'EMPEZAR A MANEJAR'}</span>
+          </button>
+        </div>
+      </div>
     </div>
   );
 };

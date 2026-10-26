@@ -44,7 +44,7 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({ onStart, onOpenQR 
   };
 
   return (
-    <div className="relative w-full h-full min-h-screen bg-[#121212] bg-carbon flex flex-col justify-between items-center p-6 text-white overflow-y-auto select-none">
+    <div className="relative w-full min-h-screen bg-[#121212] bg-carbon flex flex-col justify-between items-center p-6 text-white">
       {/* Background Ambient Glows */}
       <div className="absolute top-1/4 -left-20 w-72 h-72 bg-[#FF1801]/15 rounded-full blur-3xl pointer-events-none"></div>
       <div className="absolute bottom-1/3 -right-20 w-80 h-80 bg-[#FFD700]/10 rounded-full blur-3xl pointer-events-none"></div>
