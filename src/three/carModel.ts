@@ -5,19 +5,11 @@ import { CarSpecs } from '../types/game';
 /**
  * Helper ready to load custom .glb / .gltf models whenever the user uploads them
  */
+const modelCache = new Map<string, THREE.Group>();
+
 export async function loadCustomGLTFModel(url: string): Promise<THREE.Group | null> {
-  // Prevent GLTFLoader error on 0-byte or placeholder files
-  try {
-    const res = await fetch(url, { method: 'HEAD' }).catch(() => null);
-    if (res && res.ok) {
-      const contentLength = Number(res.headers.get('content-length') || 0);
-      if (contentLength === 0 || (contentLength > 0 && contentLength < 200)) {
-        // Empty file placeholder created by user for folder structure
-        return null;
-      }
-    }
-  } catch {
-    // Proceed to standard loader
+  if (modelCache.has(url)) {
+    return modelCache.get(url)!.clone(true);
   }
 
   return new Promise((resolve) => {
@@ -36,15 +28,85 @@ export async function loadCustomGLTFModel(url: string): Promise<THREE.Group | nu
             child.receiveShadow = true;
           }
         });
-        resolve(root);
+        modelCache.set(url, root);
+        resolve(root.clone(true));
       },
       undefined,
       (err) => {
-        console.warn('Custom GLTF model not loaded or placeholder at:', url, err);
+        console.warn('Custom GLTF model load error at:', url, err);
         resolve(null);
       }
     );
   });
+}
+
+/**
+ * Split a mesh whose geometry spans across X < 0 and X > 0 into two separate meshes
+ */
+function splitIndexedMeshByX(mesh: THREE.Mesh): { left: THREE.Mesh; right: THREE.Mesh } {
+  const geom = mesh.geometry;
+  const posAttr = geom.attributes.position;
+  const index = geom.index;
+
+  const leftIndices: number[] = [];
+  const rightIndices: number[] = [];
+
+  if (index) {
+    for (let i = 0; i < index.count; i += 3) {
+      const a = index.getX(i);
+      const b = index.getX(i + 1);
+      const c = index.getX(i + 2);
+      const ax = posAttr.getX(a);
+      const bx = posAttr.getX(b);
+      const cx = posAttr.getX(c);
+      const midX = (ax + bx + cx) / 3;
+      if (midX < 0) {
+        leftIndices.push(a, b, c);
+      } else {
+        rightIndices.push(a, b, c);
+      }
+    }
+  }
+
+  const leftGeom = geom.clone();
+  leftGeom.setIndex(leftIndices);
+  const leftMesh = new THREE.Mesh(leftGeom, mesh.material);
+  leftMesh.name = `${mesh.name}_left`;
+
+  const rightGeom = geom.clone();
+  rightGeom.setIndex(rightIndices);
+  const rightMesh = new THREE.Mesh(rightGeom, mesh.material);
+  rightMesh.name = `${mesh.name}_right`;
+
+  return { left: leftMesh, right: rightMesh };
+}
+
+/**
+ * Helper to pivot any wheel node in place around its local geometric center
+ */
+function rigWheelNodeInPlace(wheelNode: THREE.Object3D): { steerGroup: THREE.Group; rollGroup: THREE.Group } {
+  wheelNode.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(wheelNode);
+  const center = new THREE.Vector3();
+  box.getCenter(center);
+
+  const parent = wheelNode.parent || wheelNode;
+  parent.worldToLocal(center);
+
+  const steerGroup = new THREE.Group();
+  steerGroup.name = `${wheelNode.name}_steer_hub`;
+  steerGroup.position.copy(center);
+
+  const rollGroup = new THREE.Group();
+  rollGroup.name = `${wheelNode.name}_roll_axle`;
+  steerGroup.add(rollGroup);
+
+  parent.add(steerGroup);
+
+  wheelNode.position.sub(center);
+  rollGroup.add(wheelNode);
+
+  return { steerGroup, rollGroup };
 }
 
 /**
@@ -625,39 +687,162 @@ export function buildF1Car(specs: CarSpecs): F1CarController {
   shadowMesh.position.y = 0.02; // grounded flush
   carGroup.add(shadowMesh);
 
-  // Automatic custom GLB model loader from custom URL or /models/cars/
-  const targetGlbUrl = specs.customModelUrl || (specs.glbFile ? `/models/cars/${specs.glbFile}` : null);
-  if (targetGlbUrl) {
-    loadCustomGLTFModel(targetGlbUrl).then((customModel) => {
-      if (customModel) {
-        // When custom GLB is available, hide default procedural body and show custom 3D model
-        chassisGroup.visible = false;
-        frontWingGroup.visible = false;
-        rearWingGroup.visible = false;
-        haloGroup.visible = false;
+  // References to rigged GLTF wheels for in-place steering & rolling
+  const gltfWheels: {
+    flSteer?: THREE.Group;
+    flRoll?: THREE.Group;
+    frSteer?: THREE.Group;
+    frRoll?: THREE.Group;
+    rearRoll?: THREE.Group;
+    rlRoll?: THREE.Group;
+    rrRoll?: THREE.Group;
+  } = {};
 
-        // Auto-center and normalize custom model to standard F1 dimensions (~5.4m long)
-        const bbox = new THREE.Box3().setFromObject(customModel);
-        const center = new THREE.Vector3();
-        bbox.getCenter(center);
-        const size = new THREE.Vector3();
-        bbox.getSize(size);
+  // Resolve target GLB url: support both F1 2022 generic and 2004 Ferrari F2004
+  let targetGlbUrl = specs.customModelUrl || specs.glbFile;
+  if (!targetGlbUrl) {
+    targetGlbUrl = specs.id === 'ferrari_2004' ? '/assets/2004_ferrari_f2004.glb' : '/assets/f1_2022_generic.glb';
+  } else if (!targetGlbUrl.startsWith('/') && !targetGlbUrl.startsWith('http')) {
+    targetGlbUrl = `/assets/${targetGlbUrl}`;
+  }
 
-        customModel.position.x = -center.x;
-        customModel.position.y = -bbox.min.y;
-        customModel.position.z = -center.z;
+  loadCustomGLTFModel(targetGlbUrl).then((customModel) => {
+    if (customModel) {
+      // Hide all placeholder procedural meshes completely so only the authentic 3D model shows
+      for (const child of carGroup.children) {
+        if (child !== shadowMesh && child !== cockpitCameraAnchor && child !== chaseCameraAnchor) {
+          child.visible = false;
+        }
+      }
 
-        const currentLength = Math.max(size.z, size.x);
-        if (currentLength > 0) {
-          const desiredLength = 5.4;
-          const scaleFactor = desiredLength / currentLength;
-          customModel.scale.setScalar(scaleFactor);
+      const isFerrari2004 = specs.id === 'ferrari_2004' || targetGlbUrl.includes('ferrari') || targetGlbUrl.includes('2004');
+      const wrapper = new THREE.Group();
+      wrapper.name = isFerrari2004 ? 'Ferrari_F2004_GLTF' : 'F1_2022_GLTF';
+
+      if (isFerrari2004) {
+        // Ferrari F2004: Raw length is 22.45m along Z, center is at (0.02, 2.63, 7.75)
+        customModel.position.set(-0.02, 0, -7.75);
+        wrapper.add(customModel);
+
+        // Scale down to authentic ~4.60m F1 dimensions
+        const scaleFactor = 4.60 / 22.45; // ~0.2049
+        wrapper.scale.setScalar(scaleFactor);
+        wrapper.position.set(0, 0, 0);
+
+        // Find individual wheel nodes and rig each in-place around its exact hub center
+        customModel.traverse((node) => {
+          if (node.name === 'f2004_wheel_fl_1') {
+            const rig = rigWheelNodeInPlace(node);
+            gltfWheels.flSteer = rig.steerGroup;
+            gltfWheels.flRoll = rig.rollGroup;
+          } else if (node.name === 'f2004_wheel_fr_2') {
+            const rig = rigWheelNodeInPlace(node);
+            gltfWheels.frSteer = rig.steerGroup;
+            gltfWheels.frRoll = rig.rollGroup;
+          } else if (node.name === 'f2004_wheel_rl_3') {
+            const rig = rigWheelNodeInPlace(node);
+            gltfWheels.rlRoll = rig.rollGroup;
+          } else if (node.name === 'f2004_wheel_rr_4') {
+            const rig = rigWheelNodeInPlace(node);
+            gltfWheels.rrRoll = rig.rollGroup;
+          }
+        });
+      } else {
+        // F1 2022 Generic: Raw length is 7.46m, center is at (0, 0.76, 0)
+        customModel.position.set(0, -0.05, 0);
+        wrapper.add(customModel);
+
+        // Scale down to ~5.25m F1 length
+        const scaleFactor = 5.25 / 7.46; // ~0.7037
+        wrapper.scale.setScalar(scaleFactor);
+        wrapper.position.set(0, 0, 0);
+
+        let obj18: THREE.Mesh | null = null;
+        let obj19: THREE.Mesh | null = null;
+        let obj21: THREE.Mesh | null = null;
+        let obj22: THREE.Mesh | null = null;
+
+        customModel.traverse((node) => {
+          if (node.name === 'Object_18' && (node as THREE.Mesh).isMesh) obj18 = node as THREE.Mesh;
+          if (node.name === 'Object_19' && (node as THREE.Mesh).isMesh) obj19 = node as THREE.Mesh;
+          if (node.name === 'Object_21' && (node as THREE.Mesh).isMesh) obj21 = node as THREE.Mesh;
+          if (node.name === 'Object_22' && (node as THREE.Mesh).isMesh) obj22 = node as THREE.Mesh;
+        });
+
+        if (obj18 && obj21 && obj22) {
+          const { left: leftTire, right: rightTire } = splitIndexedMeshByX(obj18);
+          const parent = obj18.parent!;
+          obj18.visible = false;
+
+          // Front Left Wheel (Hub at X = -0.926, Y = 0.475, Z = 1.917)
+          const flCenter = new THREE.Vector3(-0.926, 0.475, 1.917);
+          const flSteer = new THREE.Group();
+          flSteer.name = 'F2022_FL_Steer';
+          flSteer.position.copy(flCenter);
+          const flRoll = new THREE.Group();
+          flRoll.name = 'F2022_FL_Roll';
+          flSteer.add(flRoll);
+          parent.add(flSteer);
+
+          leftTire.position.sub(flCenter);
+          flRoll.add(leftTire);
+          obj22.position.sub(flCenter);
+          flRoll.add(obj22);
+
+          gltfWheels.flSteer = flSteer;
+          gltfWheels.flRoll = flRoll;
+
+          // Front Right Wheel (Hub at X = 0.926, Y = 0.475, Z = 1.917)
+          const frCenter = new THREE.Vector3(0.926, 0.475, 1.917);
+          const frSteer = new THREE.Group();
+          frSteer.name = 'F2022_FR_Steer';
+          frSteer.position.copy(frCenter);
+          const frRoll = new THREE.Group();
+          frRoll.name = 'F2022_FR_Roll';
+          frSteer.add(frRoll);
+          parent.add(frSteer);
+
+          rightTire.position.sub(frCenter);
+          frRoll.add(rightTire);
+          obj21.position.sub(frCenter);
+          frRoll.add(obj21);
+
+          gltfWheels.frSteer = frSteer;
+          gltfWheels.frRoll = frRoll;
+
+          // Rear Wheels (Rear axle at Z = -2.720, Y = 0.476)
+          if (obj19) {
+            const rearCenter = new THREE.Vector3(0, 0.476, -2.720);
+            const rearRoll = new THREE.Group();
+            rearRoll.name = 'F2022_Rear_Roll';
+            rearRoll.position.copy(rearCenter);
+            parent.add(rearRoll);
+
+            obj19.position.sub(rearCenter);
+            rearRoll.add(obj19);
+
+            gltfWheels.rearRoll = rearRoll;
+          }
         }
 
-        carGroup.add(customModel);
+        // Team livery tinting for AI rivals
+        if (specs.id.startsWith('rival_')) {
+          const teamColor = new THREE.Color(specs.primaryColor);
+          customModel.traverse((child) => {
+            if ((child as THREE.Mesh).isMesh && child.name === 'Object_6') {
+              const mesh = child as THREE.Mesh;
+              if (mesh.material) {
+                mesh.material = (mesh.material as THREE.Material).clone();
+                (mesh.material as THREE.MeshStandardMaterial).color = teamColor;
+              }
+            }
+          });
+        }
       }
-    });
-  }
+
+      carGroup.add(wrapper);
+    }
+  });
 
   // Toggle helmet in cockpit view so driver's own helmet never blocks sight
   const setCockpitView = (isCockpit: boolean) => {
@@ -669,25 +854,38 @@ export function buildF1Car(specs: CarSpecs): F1CarController {
   let rainLightTimer = 0;
 
   const update = (steerAngle: number, speedKmh: number, delta: number, isBraking: boolean, drsActive: boolean) => {
-    // Steer front wheels smoothly
-    const maxSteerRad = 0.45; // ~26 degrees
+    // 1. Front wheels steering: wheels accompany vehicle turn
+    const maxSteerRad = 0.44; // ~25 degrees of steering lock
+    // Target steer: negative angle turns the wheel to the right (positive X)
     const targetSteer = -steerAngle * maxSteerRad;
+
+    if (gltfWheels.flSteer && gltfWheels.frSteer) {
+      gltfWheels.flSteer.rotation.y = THREE.MathUtils.damp(gltfWheels.flSteer.rotation.y, targetSteer, 18, delta);
+      gltfWheels.frSteer.rotation.y = THREE.MathUtils.damp(gltfWheels.frSteer.rotation.y, targetSteer, 18, delta);
+    }
+
+    // Procedural fallback steering
     frontLeftWheel.rotation.y = THREE.MathUtils.damp(frontLeftWheel.rotation.y, targetSteer, 16, delta);
     frontRightWheel.rotation.y = THREE.MathUtils.damp(frontRightWheel.rotation.y, targetSteer, 16, delta);
 
-    // Rotate steering wheel inside cockpit (clockwise for right, counter-clockwise for left)
-    steeringWheelMesh.rotation.z = THREE.MathUtils.damp(steeringWheelMesh.rotation.z, -steerAngle * 1.5, 16, delta);
-
-    // Rotate all 4 wheels around X axis based on speed
+    // 2. Wheel rolling forward proportional to speed
     const speedMps = (speedKmh * 1000) / 3600;
-    const wheelCircumference = Math.PI * 2 * 0.34;
-    const rotationSpeed = (speedMps / wheelCircumference) * Math.PI * 2;
-    wheelRotationAngle += rotationSpeed * delta;
+    const wheelRollDelta = (speedMps / 0.33) * delta;
+    wheelRotationAngle += wheelRollDelta;
+
+    if (gltfWheels.flRoll) gltfWheels.flRoll.rotation.x += wheelRollDelta;
+    if (gltfWheels.frRoll) gltfWheels.frRoll.rotation.x += wheelRollDelta;
+    if (gltfWheels.rearRoll) gltfWheels.rearRoll.rotation.x += wheelRollDelta;
+    if (gltfWheels.rlRoll) gltfWheels.rlRoll.rotation.x += wheelRollDelta;
+    if (gltfWheels.rrRoll) gltfWheels.rrRoll.rotation.x += wheelRollDelta;
 
     fl.wheelGroup.rotation.x = wheelRotationAngle;
     fr.wheelGroup.rotation.x = wheelRotationAngle;
     rl.wheelGroup.rotation.x = wheelRotationAngle;
     rr.wheelGroup.rotation.x = wheelRotationAngle;
+
+    // Cockpit steering wheel rotation
+    steeringWheelMesh.rotation.z = THREE.MathUtils.damp(steeringWheelMesh.rotation.z, -steerAngle * 1.5, 16, delta);
 
     // DRS flap animation
     const targetDrsRot = drsActive ? 0.35 : -0.2;
@@ -696,7 +894,6 @@ export function buildF1Car(specs: CarSpecs): F1CarController {
     // Rear rain/safety light blinking when braking or high speed
     rainLightTimer += delta;
     if (isBraking) {
-      // Rapid flash when braking
       const isLit = Math.sin(rainLightTimer * 20) > 0;
       (rearRainLight.material as THREE.MeshBasicMaterial).color.setHex(isLit ? 0xff0022 : 0x440000);
     } else {

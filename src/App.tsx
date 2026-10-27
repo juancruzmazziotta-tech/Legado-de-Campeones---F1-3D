@@ -18,6 +18,8 @@ import { RacingHUD } from './components/RacingHUD';
 import { QRModal } from './components/QRModal';
 import { LapSummaryModal } from './components/LapSummaryModal';
 import { InspectPartModal } from './components/InspectPartModal';
+import { LapHistoryModal } from './components/LapHistoryModal';
+import { RacePodiumModal } from './components/RacePodiumModal';
 
 type AppScreen = 'welcome' | 'selection' | 'racing';
 
@@ -33,6 +35,8 @@ export default function App() {
   // Modals
   const [qrModalOpen, setQrModalOpen] = useState<boolean>(false);
   const [lapSummaryOpen, setLapSummaryOpen] = useState<boolean>(false);
+  const [lapHistoryOpen, setLapHistoryOpen] = useState<boolean>(false);
+  const [racePodiumOpen, setRacePodiumOpen] = useState<boolean>(false);
   const [lastLapTime, setLastLapTime] = useState<number>(0);
   const [isNewRecord, setIsNewRecord] = useState<boolean>(false);
   const [inspectedPart, setInspectedPart] = useState<{ name: string; specs: string; description: string } | null>(null);
@@ -57,6 +61,14 @@ export default function App() {
     isOffTrack: false,
     drsAvailable: false,
     drsActive: false,
+    racePosition: 4,
+    totalRaceCars: 5,
+    raceCurrentLap: 1,
+    raceLapsTotal: 3,
+    countdownSeconds: null,
+    isRaceFinished: false,
+    raceStandings: [],
+    lapHistory: [],
   });
 
   // 3D Scene Reference
@@ -124,11 +136,17 @@ export default function App() {
       {
         onTelemetryUpdate: (newTelemetry) => {
           setTelemetry(newTelemetry);
+          if (drivingMode === 'race' && newTelemetry.isRaceFinished) {
+            setRacePodiumOpen(true);
+          }
         },
         onLapCompleted: (time, isBest) => {
           setLastLapTime(time);
           setIsNewRecord(isBest);
-          setLapSummaryOpen(true);
+          // Only interrupt with LapSummaryModal in Time Attack; Free Practice and Race laps stay continuous
+          if (drivingMode === 'time_attack') {
+            setLapSummaryOpen(true);
+          }
         },
         onInspectPart: (part) => {
           setInspectedPart(part);
@@ -190,12 +208,16 @@ export default function App() {
       sceneManagerRef.current.resetCarToStart();
     }
     setLapSummaryOpen(false);
+    setRacePodiumOpen(false);
+    setLapHistoryOpen(false);
   };
 
   // Exit Racing to Menu
   const handleExitRacing = () => {
     cleanupScene();
     setLapSummaryOpen(false);
+    setRacePodiumOpen(false);
+    setLapHistoryOpen(false);
     setScreen('selection');
   };
 
@@ -299,13 +321,14 @@ export default function App() {
           onSteerChange={handleSteerChange}
           onThrottleChange={handleThrottleChange}
           onBrakeChange={handleBrakeChange}
+          onOpenLapHistory={() => setLapHistoryOpen(true)}
         />
       )}
 
       {/* Modal 1: QR Code & Mobile Access Mockup */}
       <QRModal isOpen={qrModalOpen} onClose={() => setQrModalOpen(false)} />
 
-      {/* Modal 2: Lap Summary / Record Celebration */}
+      {/* Modal 2: Lap Summary (Time Attack Mode) */}
       <LapSummaryModal
         isOpen={lapSummaryOpen}
         lapTime={lastLapTime}
@@ -318,7 +341,26 @@ export default function App() {
         onBackToMenu={handleExitRacing}
       />
 
-      {/* Modal 3: 3D Raycaster Inspect Part Modal */}
+      {/* Modal 3: Free Practice Lap History */}
+      <LapHistoryModal
+        isOpen={lapHistoryOpen}
+        onClose={() => setLapHistoryOpen(false)}
+        circuitName={currentCircuitInfo.name}
+        lapHistory={telemetry.lapHistory || []}
+        bestLapTime={telemetry.bestLapTime}
+      />
+
+      {/* Modal 4: Grand Prix Race Podium & Standings (at end of 3 laps) */}
+      <RacePodiumModal
+        isOpen={racePodiumOpen}
+        standings={telemetry.raceStandings || []}
+        playerFinalPosition={telemetry.racePosition || 1}
+        circuitName={currentCircuitInfo.name}
+        onRestart={handleRestartLap}
+        onExit={handleExitRacing}
+      />
+
+      {/* Modal 5: 3D Raycaster Inspect Part Modal */}
       <InspectPartModal
         partInfo={inspectedPart}
         onClose={() => setInspectedPart(null)}

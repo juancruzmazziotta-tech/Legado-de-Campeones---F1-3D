@@ -15,7 +15,7 @@ export const CARS_DATA: CarSpecs[] = [
     handling: 9.5,
     powerUnit: '1.6L V6 Turbo Híbrido MGU-K + MGU-H',
     description: 'Reglamento de efecto suelo con túneles Venturi, alerones estilizados y halo de titanio.',
-    glbFile: 'f1_2022_generic.glb',
+    glbFile: '/assets/f1_2022_generic.glb',
   },
   {
     id: 'ferrari_2004',
@@ -31,7 +31,7 @@ export const CARS_DATA: CarSpecs[] = [
     handling: 9.6,
     powerUnit: 'Ferrari 053 3.0L V10 Atmosférico (19.000 RPM)',
     description: 'El legendario e invencible bólido con el que Schumacher arrasó el campeonato mundial.',
-    glbFile: '2004_ferrari_f2004.glb',
+    glbFile: '/assets/2004_ferrari_f2004.glb',
   },
 ];
 

@@ -45,6 +45,7 @@ interface RacingHUDProps {
   onOpenQR: () => void;
   onToggleMic: () => void;
   onToggleCameraBg: () => void;
+  onOpenLapHistory?: () => void;
   // Tactile Inputs
   onSteerChange: (val: number) => void;
   onThrottleChange: (val: number) => void;
@@ -67,6 +68,7 @@ export const RacingHUD: React.FC<RacingHUDProps> = ({
   onRecoverToTrack,
   onExit,
   onOpenQR,
+  onOpenLapHistory,
   onSteerChange,
   onThrottleChange,
   onBrakeChange,
@@ -150,22 +152,48 @@ export const RacingHUD: React.FC<RacingHUDProps> = ({
       {/* TOP BAR: CIRCUIT INFO ON LEFT, COMPACT ACTIONS ON RIGHT */}
       {/* ============================================================ */}
       <header className="w-full flex items-start justify-between pointer-events-auto">
-        {/* Top Left: Compact Circuit & Sector pill */}
-        <div className="flex items-center gap-1.5 bg-black/75 border border-white/10 px-3 py-1.5 rounded-full backdrop-blur-md shadow-lg">
-          <span
-            className="w-2.5 h-2.5 rounded-full"
-            style={{ backgroundColor: car.primaryColor }}
-          />
-          <span className="font-racing font-bold text-xs text-white uppercase tracking-wider">
-            {circuit.name.split(' (')[0]}
-          </span>
-          <span className="text-[10px] text-white/50 border-l border-white/20 pl-1.5 font-racing">
-            S{telemetry.sector}
-          </span>
-          {controlMode === 'gyro' && (
-            <span className="text-[9px] text-[#FF1801] font-racing font-bold pl-1 flex items-center gap-0.5">
-              <Compass className="w-3 h-3" /> GIRO
+        {/* Top Left: Compact Circuit, Position & Lap info + Lap History Button */}
+        <div className="flex flex-col items-start gap-1.5">
+          <div className="flex items-center gap-1.5 bg-black/80 border border-white/15 px-3 py-1.5 rounded-full backdrop-blur-md shadow-lg">
+            <span
+              className="w-2.5 h-2.5 rounded-full"
+              style={{ backgroundColor: car.primaryColor }}
+            />
+            <span className="font-racing font-bold text-xs text-white uppercase tracking-wider">
+              {circuit.name.split(' (')[0]}
             </span>
+            <span className="text-[10px] text-white/50 border-l border-white/20 pl-1.5 font-racing">
+              S{telemetry.sector}
+            </span>
+            {drivingMode === 'race' && (
+              <span className="text-[10px] text-[#FFD700] font-racing font-black border-l border-white/20 pl-1.5">
+                P{telemetry.racePosition || 1}/{telemetry.totalRaceCars || 5} · VTA {telemetry.raceCurrentLap || 1}/{telemetry.raceLapsTotal || 3}
+              </span>
+            )}
+            {controlMode === 'gyro' && (
+              <span className="text-[9px] text-[#FF1801] font-racing font-bold pl-1 flex items-center gap-0.5">
+                <Compass className="w-3 h-3" /> GIRO
+              </span>
+            )}
+          </div>
+
+          {/* Botón Historial de Tiempos debajo del nombre del circuito */}
+          {onOpenLapHistory && (
+            <button
+              onClick={() => {
+                triggerHaptic(15);
+                onOpenLapHistory();
+              }}
+              className="px-2.5 py-1 rounded-full bg-black/80 hover:bg-neutral-900 border border-white/20 text-white font-racing font-bold text-[10px] sm:text-xs flex items-center gap-1.5 shadow-md backdrop-blur-md cursor-pointer transition active:scale-95"
+              title="Ver todas las vueltas y tiempos marcados"
+            >
+              <span>⏱️ Historial de Tiempos</span>
+              {telemetry.lapHistory && telemetry.lapHistory.length > 0 && (
+                <span className="bg-[#FF1801] text-white text-[9px] px-1.5 py-0.2 rounded-full font-mono">
+                  {telemetry.lapHistory.length}
+                </span>
+              )}
+            </button>
           )}
         </div>
 
@@ -329,12 +357,51 @@ export const RacingHUD: React.FC<RacingHUDProps> = ({
       )}
 
       {/* ============================================================ */}
+      {/* 3-SECOND STARTING LIGHTS (Grand Prix Race Mode) */}
+      {/* ============================================================ */}
+      {telemetry.countdownSeconds !== null && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none z-30">
+          <div className="bg-black/90 border-2 border-white/20 rounded-2xl p-4 sm:p-6 backdrop-blur-md shadow-2xl flex flex-col items-center">
+            <span className="font-racing font-bold text-xs sm:text-sm text-white/60 tracking-widest mb-3 uppercase">
+              {telemetry.countdownSeconds > 0 ? 'SECUENCIA DE LARGADA' : '¡CARRERA INICIADA!'}
+            </span>
+            <div className="flex items-center gap-2 sm:gap-3 mb-3 bg-neutral-900 border border-neutral-700 px-4 py-3 rounded-xl">
+              {[1, 2, 3, 4, 5].map((lightIdx) => {
+                const isLit =
+                  telemetry.countdownSeconds !== null &&
+                  ((telemetry.countdownSeconds === 3 && lightIdx <= 2) ||
+                    (telemetry.countdownSeconds === 2 && lightIdx <= 4) ||
+                    (telemetry.countdownSeconds === 1 && lightIdx <= 5));
+                const isGo = telemetry.countdownSeconds === 0;
+
+                return (
+                  <div
+                    key={lightIdx}
+                    className={`w-5 h-5 sm:w-7 sm:h-7 rounded-full border-2 border-black flex items-center justify-center transition-all ${
+                      isGo
+                        ? 'bg-emerald-500 shadow-[0_0_16px_#10b981]'
+                        : isLit
+                        ? 'bg-red-600 shadow-[0_0_16px_#dc2626]'
+                        : 'bg-neutral-800'
+                    }`}
+                  />
+                );
+              })}
+            </div>
+            <span className="font-racing font-black text-2xl sm:text-4xl text-white tracking-wider">
+              {telemetry.countdownSeconds > 0 ? telemetry.countdownSeconds : '¡¡¡ LARGADA !!!'}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* ============================================================ */}
       {/* BOTTOM AREA: ERGONOMIC LAYOUT REQUESTED BY USER */}
       {/* LEFT: Volante / Botones Dirección */}
       {/* CENTER: Velocímetro, Tacómetro, Cronómetro, Acelerómetro */}
       {/* RIGHT: Freno (Izq) y Acelerador (Der) juntos */}
       {/* ============================================================ */}
-      <footer className="w-full flex items-end justify-between pointer-events-none gap-2 sm:gap-4 mt-auto">
+      <footer className="w-full flex items-end justify-between pointer-events-none gap-2 sm:gap-4 mt-auto max-sm:scale-[0.88] max-sm:origin-bottom">
         {/* ------------------------------------------------------------ */}
         {/* LADO IZQUIERDO: VOLANTE TÁCTIL (Donde antes estaba el freno) */}
         {/* ------------------------------------------------------------ */}

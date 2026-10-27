@@ -706,7 +706,7 @@ export class F1SceneManager {
     const highSpeedStability = 1.0 - Math.min(0.35, (absSpeed / 360) * 0.35);
     const baseTurnSpeed = 1.65 * (this.carSpecs.handling / 10);
     const steerDirection = this.isReversing ? -1 : 1;
-    this.carHeading -= effectiveSteer * baseTurnSpeed * lowSpeedAuthority * highSpeedStability * steerDirection * delta;
+    this.carHeading += effectiveSteer * baseTurnSpeed * lowSpeedAuthority * highSpeedStability * steerDirection * delta;
 
     // Update car position along heading
     const speedMps = (this.currentSpeedKmh * 1000) / 3600;
@@ -723,13 +723,9 @@ export class F1SceneManager {
       Math.sqrt(trackInfo.tangent.x * trackInfo.tangent.x + trackInfo.tangent.z * trackInfo.tangent.z)
     );
 
-    // Subtle chassis roll into corners
-    const targetRoll = -effectiveSteer * 0.08 * (absSpeed / 200);
-    this.carRoll = THREE.MathUtils.damp(this.carRoll, targetRoll, 10, delta);
-
-    // Subtle chassis pitch during acceleration / braking + hill slope
-    const targetPitch = slopePitch + (effectiveBrake * 0.04) - (effectiveThrottle * 0.02);
-    this.carPitch = THREE.MathUtils.damp(this.carPitch, targetPitch, 8, delta);
+    // Chassis stays completely flat on track - NO wobbling or lifting around center
+    this.carRoll = 0;
+    this.carPitch = slopePitch; // Matches track slope elevation smoothly without pitch bobbing
 
     // Apply to car 3D group
     this.carController.carGroup.position.copy(this.carPosition);

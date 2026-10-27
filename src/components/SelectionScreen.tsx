@@ -405,18 +405,6 @@ export const SelectionScreen: React.FC<SelectionScreenProps> = ({ onConfirm, onB
             </button>
           </div>
         </div>
-        {/* In-flow Start Button (right below cards) */}
-        <div className="pt-2">
-          <button
-            onClick={handleStartDriving}
-            disabled={isStarting}
-            className="group relative w-full py-4 px-6 rounded-2xl bg-gradient-to-r from-[#FF1801] via-[#e51500] to-[#b31000] text-white font-racing font-black text-base sm:text-lg uppercase tracking-wider shadow-2xl shadow-[#FF1801]/40 hover:scale-[1.01] active:scale-[0.98] transition-all flex items-center justify-center gap-3 cursor-pointer overflow-hidden border border-[#FF1801]/50"
-          >
-            <div className="absolute inset-0 w-1/2 h-full bg-white/20 skew-x-12 -translate-x-full group-hover:translate-x-[300%] transition-transform duration-1000" />
-            <Play className="w-5 h-5 fill-current text-[#FFD700]" />
-            <span>{isStarting ? 'INICIANDO SESIÓN...' : 'EMPEZAR A MANEJAR'}</span>
-          </button>
-        </div>
       </main>
 
       {/* Fixed Floating Bottom Bar: Always pinned to bottom of viewport on any device! */}
