@@ -926,16 +926,17 @@ export function buildF1Car(specs: CarSpecs): F1CarController {
   const update = (steerAngle: number, speedKmh: number, delta: number, isBraking: boolean, drsActive: boolean) => {
     // 1. Front wheels steering: wheels accompany vehicle turn
     const maxSteerRad = 0.44; // ~25 degrees of steering lock
-    const targetSteer = steerAngle * maxSteerRad;
+    // For F1 2022: negative Z angle turns the wheels to the right when steering right
+    const f1TargetSteer = gltfWheels.isFerrari ? (steerAngle * maxSteerRad) : (-steerAngle * maxSteerRad);
 
     if (gltfWheels.flSteer && gltfWheels.frSteer) {
-      gltfWheels.flSteer.rotation.z = THREE.MathUtils.damp(gltfWheels.flSteer.rotation.z, targetSteer, 18, delta);
-      gltfWheels.frSteer.rotation.z = THREE.MathUtils.damp(gltfWheels.frSteer.rotation.z, targetSteer, 18, delta);
+      gltfWheels.flSteer.rotation.z = THREE.MathUtils.damp(gltfWheels.flSteer.rotation.z, f1TargetSteer, 18, delta);
+      gltfWheels.frSteer.rotation.z = THREE.MathUtils.damp(gltfWheels.frSteer.rotation.z, f1TargetSteer, 18, delta);
     }
 
     // Procedural fallback steering
-    frontLeftWheel.rotation.y = THREE.MathUtils.damp(frontLeftWheel.rotation.y, -targetSteer, 16, delta);
-    frontRightWheel.rotation.y = THREE.MathUtils.damp(frontRightWheel.rotation.y, -targetSteer, 16, delta);
+    frontLeftWheel.rotation.y = THREE.MathUtils.damp(frontLeftWheel.rotation.y, f1TargetSteer, 16, delta);
+    frontRightWheel.rotation.y = THREE.MathUtils.damp(frontRightWheel.rotation.y, f1TargetSteer, 16, delta);
 
     // 2. Wheel rolling forward proportional to speed
     const speedMps = (speedKmh * 1000) / 3600;
