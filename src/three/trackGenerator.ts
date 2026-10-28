@@ -23,7 +23,30 @@ export interface CircuitTrack {
     distanceFromCenter: number;
     isOffTrack: boolean;
   };
+  checkObstacleCollision: (pos: THREE.Vector3, carRadius?: number) => {
+    hit: boolean;
+    pushX: number;
+    pushZ: number;
+    obstacleName: string;
+  } | null;
   dispose: () => void;
+}
+
+export interface ObstacleCollider {
+  type: 'segment' | 'box' | 'point';
+  ax?: number;
+  az?: number;
+  bx?: number;
+  bz?: number;
+  cx?: number;
+  cz?: number;
+  hx?: number;
+  hz?: number;
+  rot?: number;
+  x?: number;
+  z?: number;
+  radius: number;
+  name: string;
 }
 
 /**
@@ -334,23 +357,7 @@ export function buildCircuitTrack(circuitId: CircuitId, customCircuitUrl?: strin
 
   group.add(startGantry);
 
-  // 5. Pit Lane & Team Garages (Boxes)
-  const pitBuilding = buildPitBuilding(spline, trackWidth);
-  group.add(pitBuilding);
-
-  // 6. Spectator Grandstands (Tribunas)
-  const grandstands = buildGrandstands(spline, trackWidth, circuitId);
-  group.add(grandstands);
-
-  // 7. Safety Catch Fences & Armco Barriers
-  const safetyFences = buildSafetyFences(spline, trackWidth);
-  group.add(safetyFences);
-
-  // 8. Dense Circuit Perimeter Trees (2,400 trees: Ardennes pines for Spa, Santerno park trees for Imola)
-  const perimeterTrees = buildCircuitTrees(spline, trackWidth, circuitId);
-  group.add(perimeterTrees);
-
-  // Pre-sample spline points for fast closest-point query
+  // Pre-sample spline points for fast closest-point query and collision/clearance checks
   const sampleCount = 1200;
   const samplePoints: Array<{ t: number; point: THREE.Vector3; tangent: THREE.Vector3; normal: THREE.Vector3 }> = [];
   for (let i = 0; i < sampleCount; i++) {
@@ -360,6 +367,38 @@ export function buildCircuitTrack(circuitId: CircuitId, customCircuitUrl?: strin
     const nor = new THREE.Vector3().crossVectors(tan, new THREE.Vector3(0, 1, 0)).normalize();
     samplePoints.push({ t, point: pt, tangent: tan, normal: nor });
   }
+
+  // 5. Pit Lane & Team Garages (Boxes)
+  const pitData = buildPitBuilding(spline, trackWidth);
+  group.add(pitData.group);
+
+  // 6. Spectator Grandstands (Tribunas)
+  const grandstandsData = buildGrandstands(spline, trackWidth, circuitId);
+  group.add(grandstandsData.group);
+
+  // 7. Safety Catch Fences & Armco Barriers
+  const safetyFencesData = buildSafetyFences(spline, trackWidth);
+  group.add(safetyFencesData.group);
+
+  // 8. Dense Circuit Perimeter Trees (Strictly excluded from track, start grid, pits & grandstands)
+  const treeData = buildCircuitTrees(
+    spline,
+    trackWidth,
+    circuitId,
+    samplePoints,
+    grandstandsData.clearanceBoxes,
+    pitData.clearanceZone,
+    safetyFencesData.colliders
+  );
+  group.add(treeData.group);
+
+  // Aggregate all solid colliders across circuit
+  const allColliders: ObstacleCollider[] = [
+    ...pitData.colliders,
+    ...grandstandsData.colliders,
+    ...safetyFencesData.colliders,
+    ...treeData.tracksideTrees,
+  ];
 
   const getNearestPointAndProgress = (pos: THREE.Vector3) => {
     let closestDistSq = Infinity;
@@ -387,6 +426,105 @@ export function buildCircuitTrack(circuitId: CircuitId, customCircuitUrl?: strin
     };
   };
 
+  /**
+   * Fast 2D collision query against all trackside obstacles:
+   * Armco guardrails, Pit Wall, Boxes, Grandstands and Trees
+   */
+  const checkObstacleCollision = (pos: THREE.Vector3, carRadius: number = 1.25) => {
+    for (let i = 0; i < allColliders.length; i++) {
+      const c = allColliders[i];
+
+      if (c.type === 'segment' && c.ax !== undefined && c.az !== undefined && c.bx !== undefined && c.bz !== undefined) {
+        const minX = Math.min(c.ax, c.bx) - 2.5;
+        const maxX = Math.max(c.ax, c.bx) + 2.5;
+        const minZ = Math.min(c.az, c.bz) - 2.5;
+        const maxZ = Math.max(c.az, c.bz) + 2.5;
+        if (pos.x < minX || pos.x > maxX || pos.z < minZ || pos.z > maxZ) continue;
+
+        const abx = c.bx - c.ax;
+        const abz = c.bz - c.az;
+        const lenSq = abx * abx + abz * abz;
+        if (lenSq === 0) continue;
+
+        const t = Math.max(0, Math.min(1, ((pos.x - c.ax) * abx + (pos.z - c.az) * abz) / lenSq));
+        const cx = c.ax + t * abx;
+        const cz = c.az + t * abz;
+        const dx = pos.x - cx;
+        const dz = pos.z - cz;
+        const dist = Math.hypot(dx, dz);
+        const minDist = carRadius + c.radius;
+
+        if (dist < minDist && dist > 0.0001) {
+          const overlap = minDist - dist;
+          return {
+            hit: true,
+            pushX: (dx / dist) * overlap,
+            pushZ: (dz / dist) * overlap,
+            obstacleName: c.name,
+          };
+        }
+      } else if (c.type === 'box' && c.cx !== undefined && c.cz !== undefined && c.hx !== undefined && c.hz !== undefined && c.rot !== undefined) {
+        const dx = pos.x - c.cx;
+        const dz = pos.z - c.cz;
+        if (Math.abs(dx) > c.hx + 4 || Math.abs(dz) > c.hz + 4) continue;
+
+        const cosA = Math.cos(-c.rot);
+        const sinA = Math.sin(-c.rot);
+        const lx = dx * cosA - dz * sinA;
+        const lz = dx * sinA + dz * cosA;
+
+        const cx = Math.max(-c.hx, Math.min(c.hx, lx));
+        const cz = Math.max(-c.hz, Math.min(c.hz, lz));
+        const vLocalX = lx - cx;
+        const vLocalZ = lz - cz;
+        const dist = Math.hypot(vLocalX, vLocalZ);
+
+        if (dist < carRadius) {
+          let pushLX = 0;
+          let pushLZ = 0;
+          if (dist > 0.0001) {
+            const overlap = carRadius - dist;
+            pushLX = (vLocalX / dist) * overlap;
+            pushLZ = (vLocalZ / dist) * overlap;
+          } else {
+            const dX = c.hx - Math.abs(lx);
+            const dZ = c.hz - Math.abs(lz);
+            if (dX < dZ) {
+              pushLX = lx >= 0 ? (carRadius + dX) : -(carRadius + dX);
+            } else {
+              pushLZ = lz >= 0 ? (carRadius + dZ) : -(carRadius + dZ);
+            }
+          }
+          const cosBack = Math.cos(c.rot);
+          const sinBack = Math.sin(c.rot);
+          return {
+            hit: true,
+            pushX: pushLX * cosBack - pushLZ * sinBack,
+            pushZ: pushLX * sinBack + pushLZ * cosBack,
+            obstacleName: c.name,
+          };
+        }
+      } else if (c.type === 'point' && c.x !== undefined && c.z !== undefined) {
+        const dx = pos.x - c.x;
+        const dz = pos.z - c.z;
+        if (Math.abs(dx) > 3 || Math.abs(dz) > 3) continue;
+
+        const dist = Math.hypot(dx, dz);
+        const minDist = carRadius + c.radius;
+        if (dist < minDist && dist > 0.0001) {
+          const overlap = minDist - dist;
+          return {
+            hit: true,
+            pushX: (dx / dist) * overlap,
+            pushZ: (dz / dist) * overlap,
+            obstacleName: c.name,
+          };
+        }
+      }
+    }
+    return null;
+  };
+
   const dispose = () => {
     asphaltTex.dispose();
     kerbTex.dispose();
@@ -408,6 +546,7 @@ export function buildCircuitTrack(circuitId: CircuitId, customCircuitUrl?: strin
     startGantry,
     updateStartingLights,
     getNearestPointAndProgress,
+    checkObstacleCollision,
     dispose,
   };
 }
@@ -416,9 +555,14 @@ export function buildCircuitTrack(circuitId: CircuitId, customCircuitUrl?: strin
  * Procedural Pit Lane Building (Boxes) parallel to the main straight
  * Placed strictly outside the track boundary at offset > halfWidth + 8m
  */
-function buildPitBuilding(spline: THREE.CatmullRomCurve3, trackWidth: number): THREE.Group {
+function buildPitBuilding(spline: THREE.CatmullRomCurve3, trackWidth: number): {
+  group: THREE.Group;
+  colliders: ObstacleCollider[];
+  clearanceZone: { center: THREE.Vector3; radius: number };
+} {
   const pitGroup = new THREE.Group();
   pitGroup.name = 'PitBuilding';
+  const colliders: ObstacleCollider[] = [];
 
   // Placed cleanly along the flat main straightaway ahead of the start line
   const tMid = 0.035;
@@ -462,6 +606,19 @@ function buildPitBuilding(spline: THREE.CatmullRomCurve3, trackWidth: number): T
   pitWallMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), tan);
   pitGroup.add(pitWallMesh);
 
+  // Register Pit Wall segment collider
+  const pWall1 = pitWallPos.clone().sub(tan.clone().multiplyScalar(pitWallLength / 2));
+  const pWall2 = pitWallPos.clone().add(tan.clone().multiplyScalar(pitWallLength / 2));
+  colliders.push({
+    type: 'segment',
+    ax: pWall1.x,
+    az: pWall1.z,
+    bx: pWall2.x,
+    bz: pWall2.z,
+    radius: 0.65,
+    name: 'Muro de Boxes',
+  });
+
   // Pit wall fence mesh (catch fence above pit wall)
   const pitFenceGeom = new THREE.BoxGeometry(0.1, 1.4, pitWallLength);
   const pitFenceMat = new THREE.MeshStandardMaterial({
@@ -489,6 +646,18 @@ function buildPitBuilding(spline: THREE.CatmullRomCurve3, trackWidth: number): T
   buildingMesh.position.set(buildingPos.x, buildingHeight / 2, buildingPos.z);
   buildingMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), tan);
   pitGroup.add(buildingMesh);
+
+  // Register Pit Building Box Collider
+  colliders.push({
+    type: 'box',
+    cx: buildingPos.x,
+    cz: buildingPos.z,
+    hx: (buildingDepth + 1.0) / 2,
+    hz: (pitLength + 2.0) / 2,
+    rot: Math.atan2(tan.x, tan.z),
+    radius: 1.0,
+    name: 'Edificio de Boxes',
+  });
 
   // 4. Team Garage Bays (10 colored garage doors with team banners)
   const teamColors = [
@@ -552,7 +721,14 @@ function buildPitBuilding(spline: THREE.CatmullRomCurve3, trackWidth: number): T
   roofMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), tan);
   pitGroup.add(roofMesh);
 
-  return pitGroup;
+  return {
+    group: pitGroup,
+    colliders,
+    clearanceZone: {
+      center: pt.clone().addScaledVector(nor, pitBuildingOffset / 2),
+      radius: 80.0,
+    },
+  };
 }
 
 /**
@@ -562,13 +738,19 @@ function buildGrandstands(
   spline: THREE.CatmullRomCurve3,
   trackWidth: number,
   circuitId: CircuitId
-): THREE.Group {
+): {
+  group: THREE.Group;
+  colliders: ObstacleCollider[];
+  clearanceBoxes: Array<{ center: THREE.Vector3; radius: number }>;
+} {
   const standsGroup = new THREE.Group();
   standsGroup.name = 'Grandstands';
+  const colliders: ObstacleCollider[] = [];
+  const clearanceBoxes: Array<{ center: THREE.Vector3; radius: number }> = [];
 
   const halfWidth = trackWidth / 2;
 
-  // Helper to build a single grandstand unit
+  // Helper to build a single grandstand unit safely placed outside track boundaries
   const addGrandstandAt = (
     t: number,
     side: number, // +1 right, -1 left
@@ -583,7 +765,9 @@ function buildGrandstands(
     const nor = new THREE.Vector3().crossVectors(tan, up).normalize();
 
     const standGroup = new THREE.Group();
-    const standCenter = pt.clone().addScaledVector(nor, side * (halfWidth + distanceFromTrack));
+    // Keep grandstands safely offset outwards (minimum 24m away from centerline)
+    const safeOffset = Math.max(distanceFromTrack, 24.0);
+    const standCenter = pt.clone().addScaledVector(nor, side * (halfWidth + safeOffset));
     standGroup.position.set(standCenter.x, 0, standCenter.z);
 
     // Orient grandstand facing the track (lowest tier & seats in front facing track, columns at back)
@@ -640,29 +824,57 @@ function buildGrandstands(
     }
 
     standsGroup.add(standGroup);
+
+    // Register solid box collider for grandstand
+    colliders.push({
+      type: 'box',
+      cx: standCenter.x,
+      cz: standCenter.z,
+      hx: (totalDepth + 3) / 2,
+      hz: (length + 2) / 2,
+      rot: Math.atan2(facingDir.x, facingDir.z),
+      radius: 1.0,
+      name: 'Tribuna de Espectadores',
+    });
+
+    // Register clear exclusion zone so trees cannot overlap grandstands
+    clearanceBoxes.push({
+      center: standCenter,
+      radius: Math.hypot(totalDepth, length) * 0.5 + 8.0,
+    });
   };
 
-  // 1. Main Straight grandstand (opposite pit building on the main straight)
-  addGrandstandAt(0.035, -1, 18.0, 95, 12, 0x1b2838);
+  if (circuitId === 'imola') {
+    // Imola Grandstands: carefully positioned along open run-off zones
+    addGrandstandAt(0.035, -1, 25.0, 95, 12, 0x1b2838); // Main straight opposite pit building
+    addGrandstandAt(0.22, 1, 24.0, 65, 10, 0x991111);   // Piratella entry
+    addGrandstandAt(0.48, 1, 24.0, 65, 9, 0x223344);    // Acque Minerali
+    addGrandstandAt(0.82, -1, 24.0, 70, 11, 0xcc2200);   // Rivazza straight
+  } else {
+    // Spa-Francorchamps Grandstands
+    addGrandstandAt(0.035, -1, 25.0, 95, 12, 0x1b2838); // Main straight opposite pit building
+    addGrandstandAt(0.18, 1, 25.0, 80, 11, 0x991111);   // Kemmel straight
+    addGrandstandAt(0.48, -1, 25.0, 70, 10, 0x223344);  // Pouhon
+    addGrandstandAt(0.82, 1, 25.0, 75, 11, 0xcc2200);   // Blanchimont
+  }
 
-  // 2. First Corner / Hairpin grandstand (Outside of Turn 1)
-  addGrandstandAt(0.065, -1, 18.0, 70, 10, 0x991111);
-
-  // 3. Mid-circuit grandstand
-  addGrandstandAt(0.48, 1, 18.0, 60, 9, 0x223344);
-
-  // 4. Stadium / Chicane entry grandstand
-  addGrandstandAt(0.89, -1, 17.0, 75, 11, 0xcc2200);
-
-  return standsGroup;
+  return {
+    group: standsGroup,
+    colliders,
+    clearanceBoxes,
+  };
 }
 
 /**
  * Procedural Armco Guardrails and Catch Fences along outside of corners
  */
-function buildSafetyFences(spline: THREE.CatmullRomCurve3, trackWidth: number): THREE.Group {
+function buildSafetyFences(spline: THREE.CatmullRomCurve3, trackWidth: number): {
+  group: THREE.Group;
+  colliders: ObstacleCollider[];
+} {
   const fenceGroup = new THREE.Group();
   fenceGroup.name = 'SafetyCatchFences';
+  const colliders: ObstacleCollider[] = [];
 
   const halfWidth = trackWidth / 2;
   const barrierOffset = halfWidth + 4.2; // 4.2m outside tarmac
@@ -731,10 +943,24 @@ function buildSafetyFences(spline: THREE.CatmullRomCurve3, trackWidth: number): 
       const post = new THREE.Mesh(postGeom, postMat);
       post.position.set(pos1.x, 1.5, pos1.z);
       fenceGroup.add(post);
+
+      // Register solid barrier segment collider
+      colliders.push({
+        type: 'segment',
+        ax: pos1.x,
+        az: pos1.z,
+        bx: pos2.x,
+        bz: pos2.z,
+        radius: 0.45,
+        name: 'Guardarraíl Armco',
+      });
     }
   });
 
-  return fenceGroup;
+  return {
+    group: fenceGroup,
+    colliders,
+  };
 }
 
 /**
@@ -744,10 +970,18 @@ function buildSafetyFences(spline: THREE.CatmullRomCurve3, trackWidth: number): 
 function buildCircuitTrees(
   spline: THREE.CatmullRomCurve3,
   trackWidth: number,
-  circuitId: CircuitId
-): THREE.Group {
+  circuitId: CircuitId,
+  samplePoints: Array<{ t: number; point: THREE.Vector3; tangent: THREE.Vector3; normal: THREE.Vector3 }>,
+  grandstandBoxes: Array<{ center: THREE.Vector3; radius: number }>,
+  pitZone: { center: THREE.Vector3; radius: number },
+  fenceColliders: ObstacleCollider[]
+): {
+  group: THREE.Group;
+  tracksideTrees: ObstacleCollider[];
+} {
   const treeGroup = new THREE.Group();
   treeGroup.name = 'CircuitTrees';
+  const tracksideTrees: ObstacleCollider[] = [];
 
   const isSpa = circuitId === 'spa';
   const totalTrees = 2400;
@@ -778,6 +1012,7 @@ function buildCircuitTrees(
 
   const dummy = new THREE.Object3D();
   const halfWidth = trackWidth / 2;
+  const startPt = samplePoints[0].point;
 
   let instanceIdx = 0;
   const steps = 400; // 400 slices around the spline
@@ -790,18 +1025,18 @@ function buildCircuitTrees(
     const nor = new THREE.Vector3().crossVectors(tan, up).normalize();
 
     // In each slice, place trees in depth bands safely outside track, kerbs, and barriers:
-    // Band 1: Trackside tree line (18m - 28m outside asphalt)
-    // Band 2: Mid-distance grove (32m - 54m)
-    // Band 3: Background forest/hill (58m - 98m)
+    // Band 1: Trackside tree line (19m - 29m outside centerline)
+    // Band 2: Mid-distance grove (34m - 56m)
+    // Band 3: Background forest/hill (60m - 100m)
     const bands = [
-      { baseDist: 18.0, spread: 10.0 },
-      { baseDist: 32.0, spread: 22.0 },
-      { baseDist: 58.0, spread: 40.0 },
+      { baseDist: 20.0, spread: 10.0 },
+      { baseDist: 35.0, spread: 22.0 },
+      { baseDist: 60.0, spread: 40.0 },
     ];
 
     for (const side of [-1, 1]) {
       // Don't place trees in the pit lane / pit building area along the main straight
-      if (side === 1 && (t < 0.08 || t > 0.98)) continue;
+      if (side === 1 && (t < 0.10 || t > 0.97)) continue;
 
       for (let b = 0; b < bands.length; b++) {
         if (instanceIdx >= totalTrees) break;
@@ -816,24 +1051,76 @@ function buildCircuitTrees(
           .addScaledVector(nor, side * dist)
           .addScaledVector(tan, jitterAlong);
 
+        // 1. Strict Start/Finish Line clearance (keep start grid & cockpit camera 100% unobstructed)
+        if (treePos.distanceTo(startPt) < 38.0) continue;
+
+        // 2. Strict Pit Lane & Boxes clearance
+        if (treePos.distanceTo(pitZone.center) < pitZone.radius) continue;
+
+        // 3. Strict Grandstands clearance
+        let hitsGrandstand = false;
+        for (let g = 0; g < grandstandBoxes.length; g++) {
+          if (treePos.distanceTo(grandstandBoxes[g].center) < grandstandBoxes[g].radius) {
+            hitsGrandstand = true;
+            break;
+          }
+        }
+        if (hitsGrandstand) continue;
+
+        // 4. Strict Universal Track clearance against ALL circuit segments (prevents hairpin overlaps)
+        let minTrackDistSq = Infinity;
+        for (let i = 0; i < samplePoints.length; i += 2) {
+          const dx = treePos.x - samplePoints[i].point.x;
+          const dz = treePos.z - samplePoints[i].point.z;
+          const dSq = dx * dx + dz * dz;
+          if (dSq < minTrackDistSq) minTrackDistSq = dSq;
+        }
+        const minTrackDist = Math.sqrt(minTrackDistSq);
+        // Absolute minimum clearance of 16m from centerline (halfWidth ~ 7.5m + 8.5m)
+        if (minTrackDist < halfWidth + 8.5) continue;
+
+        // 5. Armco Safety Barrier clearance
+        let hitsBarrier = false;
+        for (let f = 0; f < fenceColliders.length; f += 4) {
+          const fc = fenceColliders[f];
+          if (fc.ax !== undefined && fc.az !== undefined) {
+            if (Math.hypot(treePos.x - fc.ax, treePos.z - fc.az) < 3.5) {
+              hitsBarrier = true;
+              break;
+            }
+          }
+        }
+        if (hitsBarrier) continue;
+
         const scale = 0.9 + ((seed * 11) % 10) * 0.08; // 0.9 to 1.7 scale
         const rotY = (seed * 1.618) % (Math.PI * 2);
 
-        // Trunk matrix
+        // Trunk matrix grounded flush at y = 0.00
         dummy.position.set(treePos.x, (trunkHeight * scale) / 2, treePos.z);
         dummy.scale.set(scale, scale, scale);
         dummy.rotation.set(0, rotY, 0);
         dummy.updateMatrix();
         trunkInstanced.setMatrixAt(instanceIdx, dummy.matrix);
 
-        // Foliage matrix sitting atop trunk
+        // Foliage matrix sitting cleanly atop trunk with zero floating gap
         const foliageHeight = isSpa ? 14.0 : 15.0;
-        const foliageY = trunkHeight * scale + (foliageHeight * scale) * 0.45;
+        const foliageY = trunkHeight * scale * 0.85 + (foliageHeight * scale) * 0.45;
         dummy.position.set(treePos.x, foliageY, treePos.z);
         dummy.scale.set(scale, scale, scale);
         dummy.rotation.set(0, rotY, 0);
         dummy.updateMatrix();
         foliageInstanced.setMatrixAt(instanceIdx, dummy.matrix);
+
+        // Register tree trunk collider for nearby trackside trees
+        if (minTrackDist < halfWidth + 24.0) {
+          tracksideTrees.push({
+            type: 'point',
+            x: treePos.x,
+            z: treePos.z,
+            radius: 0.85 * scale,
+            name: 'Árbol',
+          });
+        }
 
         instanceIdx++;
       }
@@ -842,11 +1129,16 @@ function buildCircuitTrees(
 
   trunkInstanced.instanceMatrix.needsUpdate = true;
   foliageInstanced.instanceMatrix.needsUpdate = true;
+  trunkInstanced.count = instanceIdx;
+  foliageInstanced.count = instanceIdx;
   trunkInstanced.computeBoundingSphere();
   foliageInstanced.computeBoundingSphere();
 
   treeGroup.add(trunkInstanced);
   treeGroup.add(foliageInstanced);
 
-  return treeGroup;
+  return {
+    group: treeGroup,
+    tracksideTrees,
+  };
 }

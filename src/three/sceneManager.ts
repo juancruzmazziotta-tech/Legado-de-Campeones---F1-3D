@@ -717,6 +717,21 @@ export class F1SceneManager {
     this.carPosition.z += forwardZ * speedMps * delta;
     this.carPosition.y = trackInfo.nearestPoint.y; // Match track elevation
 
+    // Solid contact collision against circuit obstacles (Armco guardrails, Pit Wall, Boxes, Grandstands, Trees)
+    if (this.track?.checkObstacleCollision) {
+      const obstacleHit = this.track.checkObstacleCollision(this.carPosition, 1.25);
+      if (obstacleHit) {
+        this.carPosition.x += obstacleHit.pushX;
+        this.carPosition.z += obstacleHit.pushZ;
+        if (Math.abs(this.currentSpeedKmh) > 12) {
+          audioManager.playImpactSound();
+          triggerHaptic([75, 45, 90]);
+          // Realistic momentum absorption (bounce/slowdown, authentic crash feel without breaking car or DNF)
+          this.currentSpeedKmh = this.currentSpeedKmh * 0.40;
+        }
+      }
+    }
+
     // Track slope pitch (elevation climb at Eau Rouge / Piratella)
     const slopePitch = Math.atan2(
       trackInfo.tangent.y,
