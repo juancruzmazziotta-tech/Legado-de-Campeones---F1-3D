@@ -33,18 +33,21 @@ export interface CircuitTrack {
 }
 
 export interface ObstacleCollider {
-  type: 'segment' | 'box' | 'point';
+  type: 'segment' | 'box';
+  // Segment colliders (Armco guardrails & Pit Wall):
   ax?: number;
   az?: number;
   bx?: number;
   bz?: number;
+  // Oriented box colliders (Grandstands & Pit Building):
   cx?: number;
   cz?: number;
-  hx?: number;
-  hz?: number;
-  rot?: number;
-  x?: number;
-  z?: number;
+  tanX?: number;
+  tanZ?: number;
+  norX?: number;
+  norZ?: number;
+  halfLen?: number;
+  halfDepth?: number;
   radius: number;
   name: string;
 }
@@ -392,12 +395,12 @@ export function buildCircuitTrack(circuitId: CircuitId, customCircuitUrl?: strin
   );
   group.add(treeData.group);
 
-  // Aggregate all solid colliders across circuit
+  // Aggregate solid colliders across circuit (Pit Wall, Garages, Grandstands, Armco barriers)
+  // Trees remain strictly visual without collision as requested
   const allColliders: ObstacleCollider[] = [
     ...pitData.colliders,
     ...grandstandsData.colliders,
     ...safetyFencesData.colliders,
-    ...treeData.tracksideTrees,
   ];
 
   const getNearestPointAndProgress = (pos: THREE.Vector3) => {
@@ -463,60 +466,54 @@ export function buildCircuitTrack(circuitId: CircuitId, customCircuitUrl?: strin
             obstacleName: c.name,
           };
         }
-      } else if (c.type === 'box' && c.cx !== undefined && c.cz !== undefined && c.hx !== undefined && c.hz !== undefined && c.rot !== undefined) {
+      } else if (
+        c.type === 'box' &&
+        c.cx !== undefined &&
+        c.cz !== undefined &&
+        c.tanX !== undefined &&
+        c.tanZ !== undefined &&
+        c.norX !== undefined &&
+        c.norZ !== undefined &&
+        c.halfLen !== undefined &&
+        c.halfDepth !== undefined
+      ) {
         const dx = pos.x - c.cx;
         const dz = pos.z - c.cz;
-        if (Math.abs(dx) > c.hx + 4 || Math.abs(dz) > c.hz + 4) continue;
 
-        const cosA = Math.cos(-c.rot);
-        const sinA = Math.sin(-c.rot);
-        const lx = dx * cosA - dz * sinA;
-        const lz = dx * sinA + dz * cosA;
+        // Bounding circle pre-check: if car is too far from box center, skip immediately
+        const maxDist = c.halfLen + carRadius + 4.0;
+        if (Math.abs(dx) > maxDist || Math.abs(dz) > maxDist) continue;
 
-        const cx = Math.max(-c.hx, Math.min(c.hx, lx));
-        const cz = Math.max(-c.hz, Math.min(c.hz, lz));
-        const vLocalX = lx - cx;
-        const vLocalZ = lz - cz;
-        const dist = Math.hypot(vLocalX, vLocalZ);
+        // Project displacement onto length (tangent) and depth (normal) axes
+        const localLen = dx * c.tanX + dz * c.tanZ;
+        const localDepth = dx * c.norX + dz * c.norZ;
 
-        if (dist < carRadius) {
-          let pushLX = 0;
-          let pushLZ = 0;
-          if (dist > 0.0001) {
-            const overlap = carRadius - dist;
-            pushLX = (vLocalX / dist) * overlap;
-            pushLZ = (vLocalZ / dist) * overlap;
+        const maxLen = c.halfLen + carRadius;
+        const maxDepth = c.halfDepth + carRadius;
+
+        if (Math.abs(localLen) < maxLen && Math.abs(localDepth) < maxDepth) {
+          const overlapLen = maxLen - Math.abs(localLen);
+          const overlapDepth = maxDepth - Math.abs(localDepth);
+
+          let pushX = 0;
+          let pushZ = 0;
+
+          if (overlapDepth <= overlapLen) {
+            // Eject along normal axis (front or rear of grandstand/building)
+            const sign = localDepth >= 0 ? 1 : -1;
+            pushX = c.norX * (overlapDepth * sign);
+            pushZ = c.norZ * (overlapDepth * sign);
           } else {
-            const dX = c.hx - Math.abs(lx);
-            const dZ = c.hz - Math.abs(lz);
-            if (dX < dZ) {
-              pushLX = lx >= 0 ? (carRadius + dX) : -(carRadius + dX);
-            } else {
-              pushLZ = lz >= 0 ? (carRadius + dZ) : -(carRadius + dZ);
-            }
+            // Eject along tangent axis (lateral side of grandstand/building)
+            const sign = localLen >= 0 ? 1 : -1;
+            pushX = c.tanX * (overlapLen * sign);
+            pushZ = c.tanZ * (overlapLen * sign);
           }
-          const cosBack = Math.cos(c.rot);
-          const sinBack = Math.sin(c.rot);
-          return {
-            hit: true,
-            pushX: pushLX * cosBack - pushLZ * sinBack,
-            pushZ: pushLX * sinBack + pushLZ * cosBack,
-            obstacleName: c.name,
-          };
-        }
-      } else if (c.type === 'point' && c.x !== undefined && c.z !== undefined) {
-        const dx = pos.x - c.x;
-        const dz = pos.z - c.z;
-        if (Math.abs(dx) > 3 || Math.abs(dz) > 3) continue;
 
-        const dist = Math.hypot(dx, dz);
-        const minDist = carRadius + c.radius;
-        if (dist < minDist && dist > 0.0001) {
-          const overlap = minDist - dist;
           return {
             hit: true,
-            pushX: (dx / dist) * overlap,
-            pushZ: (dz / dist) * overlap,
+            pushX,
+            pushZ,
             obstacleName: c.name,
           };
         }
@@ -652,9 +649,12 @@ function buildPitBuilding(spline: THREE.CatmullRomCurve3, trackWidth: number): {
     type: 'box',
     cx: buildingPos.x,
     cz: buildingPos.z,
-    hx: (buildingDepth + 1.0) / 2,
-    hz: (pitLength + 2.0) / 2,
-    rot: Math.atan2(tan.x, tan.z),
+    tanX: tan.x,
+    tanZ: tan.z,
+    norX: nor.x,
+    norZ: nor.z,
+    halfLen: (pitLength + 2.0) / 2,
+    halfDepth: (buildingDepth + 1.0) / 2,
     radius: 1.0,
     name: 'Edificio de Boxes',
   });
@@ -825,21 +825,25 @@ function buildGrandstands(
 
     standsGroup.add(standGroup);
 
-    // Register solid box collider for grandstand
+    // Register solid oriented box collider exactly matching the grandstand 3D bounds
+    const grandstandCenter = standCenter.clone().addScaledVector(nor, side * (totalDepth / 2));
     colliders.push({
       type: 'box',
-      cx: standCenter.x,
-      cz: standCenter.z,
-      hx: (totalDepth + 3) / 2,
-      hz: (length + 2) / 2,
-      rot: Math.atan2(facingDir.x, facingDir.z),
+      cx: grandstandCenter.x,
+      cz: grandstandCenter.z,
+      tanX: tan.x,
+      tanZ: tan.z,
+      norX: nor.x,
+      norZ: nor.z,
+      halfLen: (length + 2.0) / 2,
+      halfDepth: (totalDepth + 3.0) / 2,
       radius: 1.0,
       name: 'Tribuna de Espectadores',
     });
 
     // Register clear exclusion zone so trees cannot overlap grandstands
     clearanceBoxes.push({
-      center: standCenter,
+      center: grandstandCenter,
       radius: Math.hypot(totalDepth, length) * 0.5 + 8.0,
     });
   };
@@ -847,9 +851,9 @@ function buildGrandstands(
   if (circuitId === 'imola') {
     // Imola Grandstands: carefully positioned along open run-off zones
     addGrandstandAt(0.035, -1, 25.0, 95, 12, 0x1b2838); // Main straight opposite pit building
-    addGrandstandAt(0.22, 1, 24.0, 65, 10, 0x991111);   // Piratella entry
-    addGrandstandAt(0.48, 1, 24.0, 65, 9, 0x223344);    // Acque Minerali
-    addGrandstandAt(0.82, -1, 24.0, 70, 11, 0xcc2200);   // Rivazza straight
+    addGrandstandAt(0.22, 1, 25.0, 65, 10, 0x991111);   // Piratella entry
+    addGrandstandAt(0.48, 1, 25.0, 65, 9, 0x223344);    // Acque Minerali
+    addGrandstandAt(0.82, -1, 25.0, 70, 11, 0xcc2200);   // Rivazza straight
   } else {
     // Spa-Francorchamps Grandstands
     addGrandstandAt(0.035, -1, 25.0, 95, 12, 0x1b2838); // Main straight opposite pit building
@@ -1110,17 +1114,6 @@ function buildCircuitTrees(
         dummy.rotation.set(0, rotY, 0);
         dummy.updateMatrix();
         foliageInstanced.setMatrixAt(instanceIdx, dummy.matrix);
-
-        // Register tree trunk collider for nearby trackside trees
-        if (minTrackDist < halfWidth + 24.0) {
-          tracksideTrees.push({
-            type: 'point',
-            x: treePos.x,
-            z: treePos.z,
-            radius: 0.85 * scale,
-            name: 'Árbol',
-          });
-        }
 
         instanceIdx++;
       }
