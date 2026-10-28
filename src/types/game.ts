@@ -54,6 +54,18 @@ export interface RaceStanding {
   lapsCompleted: number;
 }
 
+export interface RaceParticipant {
+  id: string;
+  name: string;
+  team: string;
+  color: string;
+  position: number;
+  currentLap: number;
+  totalDistance: number;
+  isPlayer: boolean;
+  gapToLeader?: string;
+}
+
 export interface GameTelemetry {
   speedKmh: number;
   rpm: number;

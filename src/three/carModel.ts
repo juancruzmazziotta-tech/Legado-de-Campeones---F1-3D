@@ -41,72 +41,96 @@ export async function loadCustomGLTFModel(url: string): Promise<THREE.Group | nu
 }
 
 /**
- * Split a mesh whose geometry spans across X < 0 and X > 0 into two separate meshes
+ * Extract a sub-geometry from a mesh based on spatial predicate, creating a clean independent BufferGeometry
  */
-function splitIndexedMeshByX(mesh: THREE.Mesh): { left: THREE.Mesh; right: THREE.Mesh } {
+function extractSubGeometry(
+  mesh: THREE.Mesh,
+  predicate: (midX: number, midY: number) => boolean
+): THREE.Mesh {
   const geom = mesh.geometry;
   const posAttr = geom.attributes.position;
+  const normAttr = geom.attributes.normal;
+  const uvAttr = geom.attributes.uv;
   const index = geom.index;
 
-  const leftIndices: number[] = [];
-  const rightIndices: number[] = [];
+  const newPositions: number[] = [];
+  const newNormals: number[] = [];
+  const newUvs: number[] = [];
+  const newIndices: number[] = [];
+  const indexMap = new Map<number, number>();
+
+  function getOrAddVertex(oldIdx: number): number {
+    if (indexMap.has(oldIdx)) return indexMap.get(oldIdx)!;
+    const newIdx = newPositions.length / 3;
+    newPositions.push(posAttr.getX(oldIdx), posAttr.getY(oldIdx), posAttr.getZ(oldIdx));
+    if (normAttr) newNormals.push(normAttr.getX(oldIdx), normAttr.getY(oldIdx), normAttr.getZ(oldIdx));
+    if (uvAttr) newUvs.push(uvAttr.getX(oldIdx), uvAttr.getY(oldIdx));
+    indexMap.set(oldIdx, newIdx);
+    return newIdx;
+  }
 
   if (index) {
     for (let i = 0; i < index.count; i += 3) {
       const a = index.getX(i);
       const b = index.getX(i + 1);
       const c = index.getX(i + 2);
-      const ax = posAttr.getX(a);
-      const bx = posAttr.getX(b);
-      const cx = posAttr.getX(c);
-      const midX = (ax + bx + cx) / 3;
-      if (midX < 0) {
-        leftIndices.push(a, b, c);
-      } else {
-        rightIndices.push(a, b, c);
+      const midX = (posAttr.getX(a) + posAttr.getX(b) + posAttr.getX(c)) / 3;
+      const midY = (posAttr.getY(a) + posAttr.getY(b) + posAttr.getY(c)) / 3;
+      if (predicate(midX, midY)) {
+        newIndices.push(getOrAddVertex(a), getOrAddVertex(b), getOrAddVertex(c));
       }
     }
   }
 
-  const leftGeom = geom.clone();
-  leftGeom.setIndex(leftIndices);
-  const leftMesh = new THREE.Mesh(leftGeom, mesh.material);
-  leftMesh.name = `${mesh.name}_left`;
+  const newGeom = new THREE.BufferGeometry();
+  newGeom.setAttribute('position', new THREE.Float32BufferAttribute(newPositions, 3));
+  if (normAttr) newGeom.setAttribute('normal', new THREE.Float32BufferAttribute(newNormals, 3));
+  if (uvAttr) newGeom.setAttribute('uv', new THREE.Float32BufferAttribute(newUvs, 2));
+  newGeom.setIndex(newIndices);
+  newGeom.computeBoundingBox();
 
-  const rightGeom = geom.clone();
-  rightGeom.setIndex(rightIndices);
-  const rightMesh = new THREE.Mesh(rightGeom, mesh.material);
-  rightMesh.name = `${mesh.name}_right`;
-
-  return { left: leftMesh, right: rightMesh };
+  const newMesh = new THREE.Mesh(newGeom, mesh.material);
+  newMesh.name = `${mesh.name}_sub`;
+  return newMesh;
 }
 
 /**
- * Helper to pivot any wheel node in place around its local geometric center
+ * Rig a Ferrari F2004 wheel node inside its own local space so it stays 100% attached to its hub
  */
-function rigWheelNodeInPlace(wheelNode: THREE.Object3D): { steerGroup: THREE.Group; rollGroup: THREE.Group } {
-  wheelNode.updateMatrixWorld(true);
-  const box = new THREE.Box3().setFromObject(wheelNode);
-  const center = new THREE.Vector3();
-  box.getCenter(center);
+function rigFerrariWheel(node: THREE.Object3D): { steerHub: THREE.Group; rollAxle: THREE.Group } {
+  const children = [...node.children];
+  const box = new THREE.Box3();
+  children.forEach((c) => {
+    c.traverse((m) => {
+      if ((m as THREE.Mesh).isMesh) {
+        const mesh = m as THREE.Mesh;
+        mesh.geometry.computeBoundingBox();
+        if (mesh.geometry.boundingBox) {
+          const b = mesh.geometry.boundingBox.clone();
+          b.applyMatrix4(mesh.matrix);
+          box.union(b);
+        }
+      }
+    });
+  });
+  const localCenter = new THREE.Vector3();
+  box.getCenter(localCenter);
 
-  const parent = wheelNode.parent || wheelNode;
-  parent.worldToLocal(center);
+  const steerHub = new THREE.Group();
+  steerHub.name = `${node.name}_steer`;
+  steerHub.position.copy(localCenter);
 
-  const steerGroup = new THREE.Group();
-  steerGroup.name = `${wheelNode.name}_steer_hub`;
-  steerGroup.position.copy(center);
+  const rollAxle = new THREE.Group();
+  rollAxle.name = `${node.name}_roll`;
+  steerHub.add(rollAxle);
+  node.add(steerHub);
 
-  const rollGroup = new THREE.Group();
-  rollGroup.name = `${wheelNode.name}_roll_axle`;
-  steerGroup.add(rollGroup);
+  children.forEach((c) => {
+    c.position.sub(localCenter);
+    rollAxle.add(c);
+  });
 
-  parent.add(steerGroup);
-
-  wheelNode.position.sub(center);
-  rollGroup.add(wheelNode);
-
-  return { steerGroup, rollGroup };
+  return { steerHub, rollAxle };
 }
 
 /**
@@ -689,6 +713,7 @@ export function buildF1Car(specs: CarSpecs): F1CarController {
 
   // References to rigged GLTF wheels for in-place steering & rolling
   const gltfWheels: {
+    isFerrari?: boolean;
     flSteer?: THREE.Group;
     flRoll?: THREE.Group;
     frSteer?: THREE.Group;
@@ -716,6 +741,7 @@ export function buildF1Car(specs: CarSpecs): F1CarController {
       }
 
       const isFerrari2004 = specs.id === 'ferrari_2004' || targetGlbUrl.includes('ferrari') || targetGlbUrl.includes('2004');
+      gltfWheels.isFerrari = isFerrari2004;
       const wrapper = new THREE.Group();
       wrapper.name = isFerrari2004 ? 'Ferrari_F2004_GLTF' : 'F1_2022_GLTF';
 
@@ -729,26 +755,32 @@ export function buildF1Car(specs: CarSpecs): F1CarController {
         wrapper.scale.setScalar(scaleFactor);
         wrapper.position.set(0, 0, 0);
 
-        // Find individual wheel nodes and rig each in-place around its exact hub center
-        customModel.traverse((node) => {
-          if (node.name === 'f2004_wheel_fl_1') {
-            const rig = rigWheelNodeInPlace(node);
-            gltfWheels.flSteer = rig.steerGroup;
-            gltfWheels.flRoll = rig.rollGroup;
-          } else if (node.name === 'f2004_wheel_fr_2') {
-            const rig = rigWheelNodeInPlace(node);
-            gltfWheels.frSteer = rig.steerGroup;
-            gltfWheels.frRoll = rig.rollGroup;
-          } else if (node.name === 'f2004_wheel_rl_3') {
-            const rig = rigWheelNodeInPlace(node);
-            gltfWheels.rlRoll = rig.rollGroup;
-          } else if (node.name === 'f2004_wheel_rr_4') {
-            const rig = rigWheelNodeInPlace(node);
-            gltfWheels.rrRoll = rig.rollGroup;
-          }
-        });
+        // Find individual wheel nodes and rig each inside its own local space
+        const flNode = customModel.getObjectByName('f2004_wheel_fl_1');
+        const frNode = customModel.getObjectByName('f2004_wheel_fr_2');
+        const rlNode = customModel.getObjectByName('f2004_wheel_rl_3');
+        const rrNode = customModel.getObjectByName('f2004_wheel_rr_4');
+
+        if (flNode) {
+          const rig = rigFerrariWheel(flNode);
+          gltfWheels.flSteer = rig.steerHub;
+          gltfWheels.flRoll = rig.rollAxle;
+        }
+        if (frNode) {
+          const rig = rigFerrariWheel(frNode);
+          gltfWheels.frSteer = rig.steerHub;
+          gltfWheels.frRoll = rig.rollAxle;
+        }
+        if (rlNode) {
+          const rig = rigFerrariWheel(rlNode);
+          gltfWheels.rlRoll = rig.rollAxle;
+        }
+        if (rrNode) {
+          const rig = rigFerrariWheel(rrNode);
+          gltfWheels.rrRoll = rig.rollAxle;
+        }
       } else {
-        // F1 2022 Generic: Raw length is 7.46m, center is at (0, 0.76, 0)
+        // F1 2022 Generic: Raw length is 7.46m
         customModel.position.set(0, -0.05, 0);
         wrapper.add(customModel);
 
@@ -757,25 +789,50 @@ export function buildF1Car(specs: CarSpecs): F1CarController {
         wrapper.scale.setScalar(scaleFactor);
         wrapper.position.set(0, 0, 0);
 
-        let obj18: THREE.Mesh | null = null;
-        let obj19: THREE.Mesh | null = null;
-        let obj21: THREE.Mesh | null = null;
-        let obj22: THREE.Mesh | null = null;
-
+        const meshMap: Record<string, THREE.Mesh> = {};
         customModel.traverse((node) => {
-          if (node.name === 'Object_18' && (node as THREE.Mesh).isMesh) obj18 = node as THREE.Mesh;
-          if (node.name === 'Object_19' && (node as THREE.Mesh).isMesh) obj19 = node as THREE.Mesh;
-          if (node.name === 'Object_21' && (node as THREE.Mesh).isMesh) obj21 = node as THREE.Mesh;
-          if (node.name === 'Object_22' && (node as THREE.Mesh).isMesh) obj22 = node as THREE.Mesh;
+          if ((node as THREE.Mesh).isMesh) {
+            meshMap[node.name] = node as THREE.Mesh;
+          }
         });
 
-        if (obj18 && obj21 && obj22) {
-          const { left: leftTire, right: rightTire } = splitIndexedMeshByX(obj18);
-          const parent = obj18.parent!;
-          obj18.visible = false;
+        const mesh16 = meshMap['Object_16'];
+        const mesh17 = meshMap['Object_17'];
+        const mesh18 = meshMap['Object_18'];
+        const mesh19 = meshMap['Object_19'];
+        const mesh21 = meshMap['Object_21'];
+        const mesh22 = meshMap['Object_22'];
 
-          // Front Left Wheel (Hub at X = -0.926, Y = 0.475, Z = 1.917)
-          const flCenter = new THREE.Vector3(-0.926, 0.475, 1.917);
+        if (mesh18 && mesh19 && mesh21 && mesh22) {
+          const parent = mesh18.parent!;
+
+          // Extract each tire and rim half as a clean independent subgeometry
+          const flTire = extractSubGeometry(mesh18, (x) => x < 0);
+          const frTire = extractSubGeometry(mesh18, (x) => x > 0);
+          const rlTire = extractSubGeometry(mesh19, (x) => x < 0);
+          const rrTire = extractSubGeometry(mesh19, (x) => x > 0);
+
+          const flRim = mesh16 ? extractSubGeometry(mesh16, (x, y) => x < 0 && y < 0) : null;
+          const frRim = mesh16 ? extractSubGeometry(mesh16, (x, y) => x > 0 && y < 0) : null;
+          const rlRim = mesh16 ? extractSubGeometry(mesh16, (x, y) => x < 0 && y > 0) : null;
+          const rrRim = mesh16 ? extractSubGeometry(mesh16, (x, y) => x > 0 && y > 0) : null;
+
+          const rlCap = mesh17 ? extractSubGeometry(mesh17, (x) => x < 0) : null;
+          const rrCap = mesh17 ? extractSubGeometry(mesh17, (x) => x > 0) : null;
+
+          // Hide original composite meshes
+          mesh18.visible = false;
+          mesh19.visible = false;
+          if (mesh16) mesh16.visible = false;
+          if (mesh17) mesh17.visible = false;
+
+          // Centers of each wheel in parent coordinate space
+          const flCenter = new THREE.Vector3(); flTire.geometry.boundingBox!.getCenter(flCenter);
+          const frCenter = new THREE.Vector3(); frTire.geometry.boundingBox!.getCenter(frCenter);
+          const rlCenter = new THREE.Vector3(); rlTire.geometry.boundingBox!.getCenter(rlCenter);
+          const rrCenter = new THREE.Vector3(); rrTire.geometry.boundingBox!.getCenter(rrCenter);
+
+          // Front Left Wheel Assembly (Tire + Aerocover + Inner Rim)
           const flSteer = new THREE.Group();
           flSteer.name = 'F2022_FL_Steer';
           flSteer.position.copy(flCenter);
@@ -784,16 +841,16 @@ export function buildF1Car(specs: CarSpecs): F1CarController {
           flSteer.add(flRoll);
           parent.add(flSteer);
 
-          leftTire.position.sub(flCenter);
-          flRoll.add(leftTire);
-          obj22.position.sub(flCenter);
-          flRoll.add(obj22);
+          flTire.position.sub(flCenter);
+          flRoll.add(flTire);
+          mesh22.position.sub(flCenter);
+          flRoll.add(mesh22);
+          if (flRim) { flRim.position.sub(flCenter); flRoll.add(flRim); }
 
           gltfWheels.flSteer = flSteer;
           gltfWheels.flRoll = flRoll;
 
-          // Front Right Wheel (Hub at X = 0.926, Y = 0.475, Z = 1.917)
-          const frCenter = new THREE.Vector3(0.926, 0.475, 1.917);
+          // Front Right Wheel Assembly (Tire + Aerocover + Inner Rim)
           const frSteer = new THREE.Group();
           frSteer.name = 'F2022_FR_Steer';
           frSteer.position.copy(frCenter);
@@ -802,27 +859,40 @@ export function buildF1Car(specs: CarSpecs): F1CarController {
           frSteer.add(frRoll);
           parent.add(frSteer);
 
-          rightTire.position.sub(frCenter);
-          frRoll.add(rightTire);
-          obj21.position.sub(frCenter);
-          frRoll.add(obj21);
+          frTire.position.sub(frCenter);
+          frRoll.add(frTire);
+          mesh21.position.sub(frCenter);
+          frRoll.add(mesh21);
+          if (frRim) { frRim.position.sub(frCenter); frRoll.add(frRim); }
 
           gltfWheels.frSteer = frSteer;
           gltfWheels.frRoll = frRoll;
 
-          // Rear Wheels (Rear axle at Z = -2.720, Y = 0.476)
-          if (obj19) {
-            const rearCenter = new THREE.Vector3(0, 0.476, -2.720);
-            const rearRoll = new THREE.Group();
-            rearRoll.name = 'F2022_Rear_Roll';
-            rearRoll.position.copy(rearCenter);
-            parent.add(rearRoll);
+          // Rear Left Wheel Assembly (Tire + Hub/Rim + Cap)
+          const rlRoll = new THREE.Group();
+          rlRoll.name = 'F2022_RL_Roll';
+          rlRoll.position.copy(rlCenter);
+          parent.add(rlRoll);
 
-            obj19.position.sub(rearCenter);
-            rearRoll.add(obj19);
+          rlTire.position.sub(rlCenter);
+          rlRoll.add(rlTire);
+          if (rlRim) { rlRim.position.sub(rlCenter); rlRoll.add(rlRim); }
+          if (rlCap) { rlCap.position.sub(rlCenter); rlRoll.add(rlCap); }
 
-            gltfWheels.rearRoll = rearRoll;
-          }
+          gltfWheels.rlRoll = rlRoll;
+
+          // Rear Right Wheel Assembly (Tire + Hub/Rim + Cap)
+          const rrRoll = new THREE.Group();
+          rrRoll.name = 'F2022_RR_Roll';
+          rrRoll.position.copy(rrCenter);
+          parent.add(rrRoll);
+
+          rrTire.position.sub(rrCenter);
+          rrRoll.add(rrTire);
+          if (rrRim) { rrRim.position.sub(rrCenter); rrRoll.add(rrRim); }
+          if (rrCap) { rrCap.position.sub(rrCenter); rrRoll.add(rrCap); }
+
+          gltfWheels.rrRoll = rrRoll;
         }
 
         // Team livery tinting for AI rivals
@@ -856,28 +926,28 @@ export function buildF1Car(specs: CarSpecs): F1CarController {
   const update = (steerAngle: number, speedKmh: number, delta: number, isBraking: boolean, drsActive: boolean) => {
     // 1. Front wheels steering: wheels accompany vehicle turn
     const maxSteerRad = 0.44; // ~25 degrees of steering lock
-    // Target steer: negative angle turns the wheel to the right (positive X)
-    const targetSteer = -steerAngle * maxSteerRad;
+    const targetSteer = steerAngle * maxSteerRad;
 
     if (gltfWheels.flSteer && gltfWheels.frSteer) {
-      gltfWheels.flSteer.rotation.y = THREE.MathUtils.damp(gltfWheels.flSteer.rotation.y, targetSteer, 18, delta);
-      gltfWheels.frSteer.rotation.y = THREE.MathUtils.damp(gltfWheels.frSteer.rotation.y, targetSteer, 18, delta);
+      gltfWheels.flSteer.rotation.z = THREE.MathUtils.damp(gltfWheels.flSteer.rotation.z, targetSteer, 18, delta);
+      gltfWheels.frSteer.rotation.z = THREE.MathUtils.damp(gltfWheels.frSteer.rotation.z, targetSteer, 18, delta);
     }
 
     // Procedural fallback steering
-    frontLeftWheel.rotation.y = THREE.MathUtils.damp(frontLeftWheel.rotation.y, targetSteer, 16, delta);
-    frontRightWheel.rotation.y = THREE.MathUtils.damp(frontRightWheel.rotation.y, targetSteer, 16, delta);
+    frontLeftWheel.rotation.y = THREE.MathUtils.damp(frontLeftWheel.rotation.y, -targetSteer, 16, delta);
+    frontRightWheel.rotation.y = THREE.MathUtils.damp(frontRightWheel.rotation.y, -targetSteer, 16, delta);
 
     // 2. Wheel rolling forward proportional to speed
     const speedMps = (speedKmh * 1000) / 3600;
     const wheelRollDelta = (speedMps / 0.33) * delta;
     wheelRotationAngle += wheelRollDelta;
 
-    if (gltfWheels.flRoll) gltfWheels.flRoll.rotation.x += wheelRollDelta;
-    if (gltfWheels.frRoll) gltfWheels.frRoll.rotation.x += wheelRollDelta;
-    if (gltfWheels.rearRoll) gltfWheels.rearRoll.rotation.x += wheelRollDelta;
-    if (gltfWheels.rlRoll) gltfWheels.rlRoll.rotation.x += wheelRollDelta;
-    if (gltfWheels.rrRoll) gltfWheels.rrRoll.rotation.x += wheelRollDelta;
+    const rollDelta = gltfWheels.isFerrari ? -wheelRollDelta : wheelRollDelta;
+    if (gltfWheels.flRoll) gltfWheels.flRoll.rotation.x += rollDelta;
+    if (gltfWheels.frRoll) gltfWheels.frRoll.rotation.x += rollDelta;
+    if (gltfWheels.rlRoll) gltfWheels.rlRoll.rotation.x += rollDelta;
+    if (gltfWheels.rrRoll) gltfWheels.rrRoll.rotation.x += rollDelta;
+    if (gltfWheels.rearRoll) gltfWheels.rearRoll.rotation.x += rollDelta;
 
     fl.wheelGroup.rotation.x = wheelRotationAngle;
     fr.wheelGroup.rotation.x = wheelRotationAngle;

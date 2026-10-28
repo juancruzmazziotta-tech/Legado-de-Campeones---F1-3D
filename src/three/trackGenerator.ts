@@ -420,15 +420,16 @@ function buildPitBuilding(spline: THREE.CatmullRomCurve3, trackWidth: number): T
   const pitGroup = new THREE.Group();
   pitGroup.name = 'PitBuilding';
 
-  const tMid = 0.985;
+  // Placed cleanly along the flat main straightaway ahead of the start line
+  const tMid = 0.035;
   const pt = spline.getPointAt(tMid);
   const tan = spline.getTangentAt(tMid).normalize();
   const up = new THREE.Vector3(0, 1, 0);
   const nor = new THREE.Vector3().crossVectors(tan, up).normalize();
 
   const halfWidth = trackWidth / 2;
-  const pitLength = 125;
-  const pitBuildingOffset = halfWidth + 14.0; // 14m to the right of centerline
+  const pitLength = 120;
+  const pitBuildingOffset = halfWidth + 16.0; // 16m to the right of centerline, completely outside asphalt & kerbs
 
   // 1. Pit Lane Tarmac strip
   const pitLaneWidth = 8.0;
@@ -585,9 +586,9 @@ function buildGrandstands(
     const standCenter = pt.clone().addScaledVector(nor, side * (halfWidth + distanceFromTrack));
     standGroup.position.set(standCenter.x, 0, standCenter.z);
 
-    // Orient grandstand facing the track
+    // Orient grandstand facing the track (lowest tier & seats in front facing track, columns at back)
     const facingDir = nor.clone().multiplyScalar(-side);
-    standGroup.quaternion.setFromUnitVectors(new THREE.Vector3(1, 0, 0), facingDir);
+    standGroup.quaternion.setFromUnitVectors(new THREE.Vector3(-1, 0, 0), facingDir);
 
     const tierDepth = 0.9;
     const tierHeight = 0.55;
@@ -641,8 +642,8 @@ function buildGrandstands(
     standsGroup.add(standGroup);
   };
 
-  // 1. Main Straight grandstand (opposite pit building)
-  addGrandstandAt(0.985, -1, 16.0, 95, 12, 0x1b2838);
+  // 1. Main Straight grandstand (opposite pit building on the main straight)
+  addGrandstandAt(0.035, -1, 18.0, 95, 12, 0x1b2838);
 
   // 2. First Corner / Hairpin grandstand (Outside of Turn 1)
   addGrandstandAt(0.065, -1, 18.0, 70, 10, 0x991111);
@@ -788,17 +789,20 @@ function buildCircuitTrees(
     const up = new THREE.Vector3(0, 1, 0);
     const nor = new THREE.Vector3().crossVectors(tan, up).normalize();
 
-    // In each slice, place 6 trees (3 left, 3 right) in depth bands:
-    // Band 1: Trackside tree line (10m - 18m outside asphalt)
-    // Band 2: Mid-distance grove (22m - 42m)
-    // Band 3: Background forest/hill (45m - 85m)
+    // In each slice, place trees in depth bands safely outside track, kerbs, and barriers:
+    // Band 1: Trackside tree line (18m - 28m outside asphalt)
+    // Band 2: Mid-distance grove (32m - 54m)
+    // Band 3: Background forest/hill (58m - 98m)
     const bands = [
-      { baseDist: 10.0, spread: 8.0 },
-      { baseDist: 22.0, spread: 20.0 },
-      { baseDist: 46.0, spread: 40.0 },
+      { baseDist: 18.0, spread: 10.0 },
+      { baseDist: 32.0, spread: 22.0 },
+      { baseDist: 58.0, spread: 40.0 },
     ];
 
     for (const side of [-1, 1]) {
+      // Don't place trees in the pit lane / pit building area along the main straight
+      if (side === 1 && (t < 0.08 || t > 0.98)) continue;
+
       for (let b = 0; b < bands.length; b++) {
         if (instanceIdx >= totalTrees) break;
 

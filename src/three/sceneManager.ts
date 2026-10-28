@@ -700,13 +700,13 @@ export class F1SceneManager {
     // Calculate RPM and Gear Shifting
     this.calculateGearAndRpm();
 
-    // Responsive vehicle steering: turns smoothly and accurately (Left = Left, Right = Right)
+    // Responsive vehicle steering: D / Right turns right, A / Left turns left
     const absSpeed = Math.abs(this.currentSpeedKmh);
     const lowSpeedAuthority = Math.max(0.7, Math.min(1.0, absSpeed / 12));
     const highSpeedStability = 1.0 - Math.min(0.35, (absSpeed / 360) * 0.35);
     const baseTurnSpeed = 1.65 * (this.carSpecs.handling / 10);
     const steerDirection = this.isReversing ? -1 : 1;
-    this.carHeading += effectiveSteer * baseTurnSpeed * lowSpeedAuthority * highSpeedStability * steerDirection * delta;
+    this.carHeading -= effectiveSteer * baseTurnSpeed * lowSpeedAuthority * highSpeedStability * steerDirection * delta;
 
     // Update car position along heading
     const speedMps = (this.currentSpeedKmh * 1000) / 3600;
@@ -1081,7 +1081,7 @@ export class F1SceneManager {
       gear: this.currentGear,
       throttle: this.throttleInput,
       brake: this.brakeInput,
-      steerAngle: this.steerInput,
+      steerAngle: this.steerInput !== 0 ? this.steerInput : this.smoothedKeyboardSteer,
       lapTime: this.currentLapTime,
       bestLapTime: this.bestLapTime,
       sector: this.currentSector,
