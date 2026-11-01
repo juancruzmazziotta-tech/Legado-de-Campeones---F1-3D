@@ -172,15 +172,9 @@ export class F1SceneManager {
     this.renderer.setSize(width, height);
     this.container.appendChild(this.renderer.domElement);
 
-    // 3. Initialize Scene & Environment
+    // 3. Initialize Scene & Environment (Photorealistic 360° HDRI Sky Panorama)
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x87ceeb); // F1 Sunny Sky Blue
-    this.scene.fog = new THREE.FogExp2(0x87ceeb, 0.0018);
-
-    // Studio Environment Reflections
-    const pmremGenerator = new THREE.PMREMGenerator(this.renderer);
-    this.scene.environment = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture;
-    pmremGenerator.dispose();
+    this.setupSkyboxEnvironment();
 
     // 4. Initialize Camera
     this.camera = new THREE.PerspectiveCamera(65, width / height, 0.1, 1000);
@@ -414,7 +408,29 @@ export class F1SceneManager {
       this.videoTexture.dispose();
       this.videoTexture = null;
     }
-    this.scene.background = new THREE.Color(0x87ceeb);
+    this.setupSkyboxEnvironment();
+  }
+
+  /**
+   * Sets up authentic 360° panoramic HDRI sky and environmental reflections
+   * customized for Spa-Francorchamps (Ardennes forests) and Imola (Emilia-Romagna hills).
+   */
+  private setupSkyboxEnvironment(): void {
+    const isSpa = this.circuitId === 'spa';
+    const skyUrl = isSpa ? '/assets/sky_spa.jpg' : '/assets/sky_imola.jpg';
+
+    // Immediate clean ambient fallback while texture loads
+    const initialSkyColor = isSpa ? 0x7fa2b9 : 0x98b8d4;
+    this.scene.background = new THREE.Color(initialSkyColor);
+    this.scene.fog = new THREE.FogExp2(initialSkyColor, 0.0007);
+
+    const loader = new THREE.TextureLoader();
+    loader.load(skyUrl, (texture) => {
+      texture.mapping = THREE.EquirectangularReflectionMapping;
+      texture.colorSpace = THREE.SRGBColorSpace;
+      this.scene.background = texture;
+      this.scene.environment = texture;
+    });
   }
 
   private startCountdownIfTimeAttack(): void {

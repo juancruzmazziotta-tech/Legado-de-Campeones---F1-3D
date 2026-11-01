@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { CircuitId } from '../types/game';
 import { loadCustomGLTFModel } from './carModel';
 import { CIRCUITS_DATA } from '../data/f1Data';
@@ -967,9 +968,142 @@ function buildSafetyFences(spline: THREE.CatmullRomCurve3, trackWidth: number): 
   };
 }
 
+interface Tree3DTemplate {
+  barkGeom: THREE.BufferGeometry;
+  ramaGeom: THREE.BufferGeometry;
+  barkMat: THREE.Material;
+  ramaMat: THREE.Material;
+}
+
+let cachedTree3DTemplates: Tree3DTemplate[] | null = null;
+let tree3DLoadingPromise: Promise<Tree3DTemplate[] | null> | null = null;
+
 /**
- * Procedural High-Density Perimeter Forest using InstancedMesh for 60+ FPS
- * (Dense Ardennes pine forest for Spa, Santerno parkland poplars & cypresses for Imola)
+ * Loads the 4 realistic 3D tree models from /assets/arboles2.glb,
+ * extracting normalized bark and branch/leaf geometries for high-performance InstancedMesh rendering.
+ */
+function loadTree3DModels(): Promise<Tree3DTemplate[] | null> {
+  if (cachedTree3DTemplates) {
+    return Promise.resolve(cachedTree3DTemplates);
+  }
+  if (tree3DLoadingPromise) {
+    return tree3DLoadingPromise;
+  }
+
+  tree3DLoadingPromise = new Promise((resolve) => {
+    const loader = new GLTFLoader();
+    loader.load(
+      '/assets/arboles2.glb',
+      (gltf) => {
+        try {
+          const scene = gltf.scene;
+          scene.updateMatrixWorld(true);
+
+          const treeNodes: THREE.Object3D[] = [];
+          scene.traverse((child) => {
+            if (child.name && /arbol/i.test(child.name)) {
+              treeNodes.push(child);
+            }
+          });
+          treeNodes.sort((a, b) => a.name.localeCompare(b.name));
+          const templates: Tree3DTemplate[] = [];
+
+          for (const treeNode of treeNodes) {
+
+            let barkMesh: THREE.Mesh | null = null;
+            let ramaMesh: THREE.Mesh | null = null;
+
+            treeNode.traverse((child) => {
+              if ((child as THREE.Mesh).isMesh) {
+                const m = child as THREE.Mesh;
+                const matName = (m.material as THREE.Material)?.name?.toLowerCase() || '';
+                const objName = m.name.toLowerCase();
+                if (matName.includes('bark') || objName.includes('bark')) {
+                  barkMesh = m;
+                } else if (matName.includes('rama') || objName.includes('rama')) {
+                  ramaMesh = m;
+                }
+              }
+            });
+
+            if (!barkMesh || !ramaMesh) continue;
+
+            // Apply world transform so Sketchfab/Collada rotations and scales are baked into geometry
+            const bMesh = barkMesh as THREE.Mesh;
+            const rMesh = ramaMesh as THREE.Mesh;
+            const barkGeom = bMesh.geometry.clone().applyMatrix4(bMesh.matrixWorld);
+            const ramaGeom = rMesh.geometry.clone().applyMatrix4(rMesh.matrixWorld);
+
+            barkGeom.computeBoundingBox();
+            ramaGeom.computeBoundingBox();
+
+            const treeBox = new THREE.Box3();
+            if (barkGeom.boundingBox) treeBox.union(barkGeom.boundingBox);
+            if (ramaGeom.boundingBox) treeBox.union(ramaGeom.boundingBox);
+
+            const centerX = (treeBox.min.x + treeBox.max.x) / 2;
+            const baseY = treeBox.min.y;
+            const centerZ = (treeBox.min.z + treeBox.max.z) / 2;
+            const origHeight = treeBox.max.y - treeBox.min.y;
+
+            // Translate so the trunk base is flush at (0, 0, 0)
+            barkGeom.translate(-centerX, -baseY, -centerZ);
+            ramaGeom.translate(-centerX, -baseY, -centerZ);
+
+            // Normalize height to realistic F1 circuit pine/spruce tree scale (~14.5m)
+            const targetHeight = 14.5;
+            const scaleRatio = origHeight > 0.1 ? targetHeight / origHeight : 1.0;
+            barkGeom.scale(scaleRatio, scaleRatio, scaleRatio);
+            ramaGeom.scale(scaleRatio, scaleRatio, scaleRatio);
+
+            barkGeom.computeVertexNormals();
+            ramaGeom.computeVertexNormals();
+
+            const barkMat = (bMesh.material as THREE.MeshStandardMaterial).clone();
+            barkMat.roughness = 0.88;
+            barkMat.metalness = 0.05;
+
+            const ramaMat = (rMesh.material as THREE.MeshStandardMaterial).clone();
+            ramaMat.side = THREE.DoubleSide;
+            ramaMat.alphaTest = 0.45; // Sharp alpha masked needles without depth-sorting artifacts
+            ramaMat.transparent = false;
+            ramaMat.roughness = 0.82;
+            ramaMat.needsUpdate = true;
+
+            templates.push({
+              barkGeom,
+              ramaGeom,
+              barkMat,
+              ramaMat,
+            });
+          }
+
+          if (templates.length > 0) {
+            cachedTree3DTemplates = templates;
+            resolve(templates);
+          } else {
+            resolve(null);
+          }
+        } catch (err) {
+          console.warn('Error extracting tree models from arboles2.glb:', err);
+          resolve(null);
+        }
+      },
+      undefined,
+      (err) => {
+        console.warn('Could not load /assets/arboles2.glb:', err);
+        resolve(null);
+      }
+    );
+  });
+
+  return tree3DLoadingPromise;
+}
+
+/**
+ * Procedural High-Density Perimeter Forest
+ * Initially renders fast procedural trees, then asynchronously upgrades
+ * to the 4 realistic 3D tree models from /assets/arboles2.glb using InstancedMesh for 60+ FPS.
  */
 function buildCircuitTrees(
   spline: THREE.CatmullRomCurve3,
@@ -990,7 +1124,7 @@ function buildCircuitTrees(
   const isSpa = circuitId === 'spa';
   const totalTrees = 2400;
 
-  // 1. Wood trunk geometry & material
+  // 1. Initial fast procedural fallback trunk geometry & material
   const trunkHeight = 6.0;
   const trunkGeom = new THREE.CylinderGeometry(0.35, 0.55, trunkHeight, 6);
   const trunkMat = new THREE.MeshStandardMaterial({
@@ -1000,9 +1134,7 @@ function buildCircuitTrees(
   });
   const trunkInstanced = new THREE.InstancedMesh(trunkGeom, trunkMat, totalTrees);
 
-  // 2. Foliage geometry & material
-  // Spa: Ardennes tall evergreen conifer cone (height 14m)
-  // Imola: Italian cypress cone or lush poplar umbrella canopy
+  // 2. Initial fast procedural fallback foliage
   const foliageGeom = isSpa
     ? new THREE.ConeGeometry(3.6, 14.0, 7)
     : new THREE.ConeGeometry(2.4, 15.0, 7);
@@ -1017,6 +1149,14 @@ function buildCircuitTrees(
   const dummy = new THREE.Object3D();
   const halfWidth = trackWidth / 2;
   const startPt = samplePoints[0].point;
+
+  interface TreePlacement {
+    pos: THREE.Vector3;
+    rotY: number;
+    scale: number;
+    typeIndex: number;
+  }
+  const treePlacements: TreePlacement[] = [];
 
   let instanceIdx = 0;
   const steps = 400; // 400 slices around the spline
@@ -1096,17 +1236,25 @@ function buildCircuitTrees(
         }
         if (hitsBarrier) continue;
 
-        const scale = 0.9 + ((seed * 11) % 10) * 0.08; // 0.9 to 1.7 scale
+        const scale = 0.9 + ((seed * 11) % 10) * 0.08; // 0.9 to 1.7 natural scale variation
         const rotY = (seed * 1.618) % (Math.PI * 2);
+        const typeIndex = Math.abs(seed * 3 + s) % 4; // Randomized selection across the 4 tree models
 
-        // Trunk matrix grounded flush at y = 0.00
+        treePlacements.push({
+          pos: treePos.clone(),
+          rotY,
+          scale,
+          typeIndex,
+        });
+
+        // Set procedural fallback trunk matrix grounded flush at y = 0.00
         dummy.position.set(treePos.x, (trunkHeight * scale) / 2, treePos.z);
         dummy.scale.set(scale, scale, scale);
         dummy.rotation.set(0, rotY, 0);
         dummy.updateMatrix();
         trunkInstanced.setMatrixAt(instanceIdx, dummy.matrix);
 
-        // Foliage matrix sitting cleanly atop trunk with zero floating gap
+        // Set procedural fallback foliage matrix
         const foliageHeight = isSpa ? 14.0 : 15.0;
         const foliageY = trunkHeight * scale * 0.85 + (foliageHeight * scale) * 0.45;
         dummy.position.set(treePos.x, foliageY, treePos.z);
@@ -1129,6 +1277,50 @@ function buildCircuitTrees(
 
   treeGroup.add(trunkInstanced);
   treeGroup.add(foliageInstanced);
+
+  // Asynchronously load and populate the 4 realistic 3D tree models from /assets/arboles2.glb
+  loadTree3DModels().then((templates) => {
+    if (!templates || templates.length === 0) return;
+
+    const glbTreesGroup = new THREE.Group();
+    glbTreesGroup.name = 'GLBTreeForest';
+
+    // Build instanced meshes for each of the 4 tree types
+    for (let t = 0; t < templates.length; t++) {
+      const tmpl = templates[t];
+      const typeInstances = treePlacements.filter((item) => (item.typeIndex % templates.length) === t);
+      if (typeInstances.length === 0) continue;
+
+      const barkInstanced = new THREE.InstancedMesh(tmpl.barkGeom, tmpl.barkMat, typeInstances.length);
+      const ramaInstanced = new THREE.InstancedMesh(tmpl.ramaGeom, tmpl.ramaMat, typeInstances.length);
+
+      const d = new THREE.Object3D();
+      for (let i = 0; i < typeInstances.length; i++) {
+        const inst = typeInstances[i];
+        d.position.set(inst.pos.x, 0, inst.pos.z);
+        d.rotation.set(0, inst.rotY, 0);
+        d.scale.set(inst.scale, inst.scale, inst.scale);
+        d.updateMatrix();
+
+        barkInstanced.setMatrixAt(i, d.matrix);
+        ramaInstanced.setMatrixAt(i, d.matrix);
+      }
+
+      barkInstanced.instanceMatrix.needsUpdate = true;
+      ramaInstanced.instanceMatrix.needsUpdate = true;
+      barkInstanced.computeBoundingSphere();
+      ramaInstanced.computeBoundingSphere();
+
+      glbTreesGroup.add(barkInstanced);
+      glbTreesGroup.add(ramaInstanced);
+    }
+
+    treeGroup.add(glbTreesGroup);
+
+    // Smoothly hide the low-quality procedural fallback trees
+    trunkInstanced.visible = false;
+    foliageInstanced.visible = false;
+  });
 
   return {
     group: treeGroup,
