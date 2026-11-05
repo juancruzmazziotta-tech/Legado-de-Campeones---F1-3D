@@ -44,6 +44,8 @@ export class F1SceneManager {
   private scene: THREE.Scene;
   private camera: THREE.PerspectiveCamera;
   private isSoftwareGl: boolean;
+  private isMobile: boolean;
+  private lastTelemetryTime: number = 0;
   private animationFrameId: number = 0;
   private isDisposed: boolean = false;
 
@@ -143,7 +145,7 @@ export class F1SceneManager {
     this.callbacks = callbacks;
     this.customCircuitUrl = customCircuitUrl;
 
-    // 1. Detect Software WebGL
+    // 1. Detect Software WebGL & Mobile device
     this.isSoftwareGl = (() => {
       const gl = document.createElement('canvas').getContext('webgl2');
       if (!gl) return true;
@@ -154,18 +156,26 @@ export class F1SceneManager {
       return /SwiftShader|llvmpipe|softpipe|Software|Basic Render/i.test(gpu);
     })();
 
-    // 2. Initialize WebGLRenderer
+    this.isMobile = typeof navigator !== 'undefined' && (
+      /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) ||
+      (typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(max-width: 850px)').matches)
+    );
+
+    // 2. Initialize WebGLRenderer with high-efficiency mobile settings
     this.renderer = new THREE.WebGLRenderer({
-      antialias: !this.isSoftwareGl,
+      antialias: !this.isSoftwareGl && !this.isMobile,
       powerPreference: 'high-performance',
-      alpha: true,
+      alpha: false, // Critical: disables OS window compositor alpha blending passes on mobile
+      stencil: false,
+      depth: true,
     });
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.15;
-    this.renderer.setPixelRatio(this.isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, 2));
+    const maxDpr = this.isSoftwareGl ? 1 : (this.isMobile ? 1.5 : 2);
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, maxDpr));
     this.renderer.shadowMap.enabled = !this.isSoftwareGl;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.type = this.isMobile ? THREE.BasicShadowMap : THREE.PCFSoftShadowMap;
 
     const width = container.clientWidth || window.innerWidth;
     const height = container.clientHeight || window.innerHeight;
@@ -176,8 +186,9 @@ export class F1SceneManager {
     this.scene = new THREE.Scene();
     this.setupSkyboxEnvironment();
 
-    // 4. Initialize Camera
-    this.camera = new THREE.PerspectiveCamera(65, width / height, 0.1, 1000);
+    // 4. Initialize Camera (Far plane optimized for mobile)
+    const camFar = this.isMobile ? 650 : 1000;
+    this.camera = new THREE.PerspectiveCamera(65, width / height, 0.1, camFar);
 
     // 5. Lighting Rig
     this.setupLighting();
@@ -229,8 +240,9 @@ export class F1SceneManager {
     sunLight.position.set(60, 90, 40);
     sunLight.castShadow = !this.isSoftwareGl;
     if (sunLight.shadow) {
-      sunLight.shadow.mapSize.width = 1024;
-      sunLight.shadow.mapSize.height = 1024;
+      const shadowMapDim = this.isMobile ? 512 : 1024;
+      sunLight.shadow.mapSize.width = shadowMapDim;
+      sunLight.shadow.mapSize.height = shadowMapDim;
       sunLight.shadow.camera.near = 10;
       sunLight.shadow.camera.far = 300;
       const d = 40;
@@ -1101,8 +1113,14 @@ export class F1SceneManager {
     // Lateral G estimation
     const lateralG = (this.steerInput * (this.currentSpeedKmh / 160)) * 2.8;
 
-    // Send audio updates to Web Audio API engine
+    // Send audio updates to Web Audio API engine on every frame for immediate acoustic feedback
     audioManager.updateTelemetry(this.currentRpm, this.throttleInput, this.brakeInput, lateralG);
+
+    // Throttle React HUD updates to 30 FPS (~33ms) to eliminate React reconciliation and GC micro-stutters
+    if (now - this.lastTelemetryTime < 32) {
+      return;
+    }
+    this.lastTelemetryTime = now;
 
     // Notify React HUD
     const trackInfo = this.track ? this.track.getNearestPointAndProgress(this.carPosition) : null;
@@ -1128,7 +1146,7 @@ export class F1SceneManager {
       countdownSeconds: this.raceCountdownSeconds,
       isRaceFinished: this.isRaceFinished,
       raceStandings: this.raceStandings,
-      lapHistory: [...this.lapHistory],
+      lapHistory: this.lapHistory,
     });
   }
 

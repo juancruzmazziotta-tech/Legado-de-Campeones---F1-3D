@@ -1155,6 +1155,7 @@ function buildCircuitTrees(
     rotY: number;
     scale: number;
     typeIndex: number;
+    sector: number;
   }
   const treePlacements: TreePlacement[] = [];
 
@@ -1163,6 +1164,7 @@ function buildCircuitTrees(
 
   for (let s = 0; s < steps; s++) {
     const t = s / steps;
+    const sector = Math.min(15, Math.floor(t * 16));
     const pt = spline.getPointAt(t);
     const tan = spline.getTangentAt(t).normalize();
     const up = new THREE.Vector3(0, 1, 0);
@@ -1245,6 +1247,7 @@ function buildCircuitTrees(
           rotY,
           scale,
           typeIndex,
+          sector,
         });
 
         // Set procedural fallback trunk matrix grounded flush at y = 0.00
@@ -1279,40 +1282,53 @@ function buildCircuitTrees(
   treeGroup.add(foliageInstanced);
 
   // Asynchronously load and populate the 4 realistic 3D tree models from /assets/arboles2.glb
+  // Partitioned into 16 spatial sector chunks along the track spline for high-performance frustum culling!
   loadTree3DModels().then((templates) => {
     if (!templates || templates.length === 0) return;
 
     const glbTreesGroup = new THREE.Group();
     glbTreesGroup.name = 'GLBTreeForest';
 
-    // Build instanced meshes for each of the 4 tree types
-    for (let t = 0; t < templates.length; t++) {
-      const tmpl = templates[t];
-      const typeInstances = treePlacements.filter((item) => (item.typeIndex % templates.length) === t);
-      if (typeInstances.length === 0) continue;
+    const NUM_SECTORS = 16;
+    const d = new THREE.Object3D();
 
-      const barkInstanced = new THREE.InstancedMesh(tmpl.barkGeom, tmpl.barkMat, typeInstances.length);
-      const ramaInstanced = new THREE.InstancedMesh(tmpl.ramaGeom, tmpl.ramaMat, typeInstances.length);
+    for (let s = 0; s < NUM_SECTORS; s++) {
+      const sectorTrees = treePlacements.filter((item) => item.sector === s);
+      if (sectorTrees.length === 0) continue;
 
-      const d = new THREE.Object3D();
-      for (let i = 0; i < typeInstances.length; i++) {
-        const inst = typeInstances[i];
-        d.position.set(inst.pos.x, 0, inst.pos.z);
-        d.rotation.set(0, inst.rotY, 0);
-        d.scale.set(inst.scale, inst.scale, inst.scale);
-        d.updateMatrix();
+      const sectorGroup = new THREE.Group();
+      sectorGroup.name = `TreeSector_${s}`;
 
-        barkInstanced.setMatrixAt(i, d.matrix);
-        ramaInstanced.setMatrixAt(i, d.matrix);
+      // Build instanced meshes for each template type within this sector
+      for (let t = 0; t < templates.length; t++) {
+        const tmpl = templates[t];
+        const typeInstances = sectorTrees.filter((item) => (item.typeIndex % templates.length) === t);
+        if (typeInstances.length === 0) continue;
+
+        const barkInstanced = new THREE.InstancedMesh(tmpl.barkGeom, tmpl.barkMat, typeInstances.length);
+        const ramaInstanced = new THREE.InstancedMesh(tmpl.ramaGeom, tmpl.ramaMat, typeInstances.length);
+
+        for (let i = 0; i < typeInstances.length; i++) {
+          const inst = typeInstances[i];
+          d.position.set(inst.pos.x, 0, inst.pos.z);
+          d.rotation.set(0, inst.rotY, 0);
+          d.scale.set(inst.scale, inst.scale, inst.scale);
+          d.updateMatrix();
+
+          barkInstanced.setMatrixAt(i, d.matrix);
+          ramaInstanced.setMatrixAt(i, d.matrix);
+        }
+
+        barkInstanced.instanceMatrix.needsUpdate = true;
+        ramaInstanced.instanceMatrix.needsUpdate = true;
+        barkInstanced.computeBoundingSphere();
+        ramaInstanced.computeBoundingSphere();
+
+        sectorGroup.add(barkInstanced);
+        sectorGroup.add(ramaInstanced);
       }
 
-      barkInstanced.instanceMatrix.needsUpdate = true;
-      ramaInstanced.instanceMatrix.needsUpdate = true;
-      barkInstanced.computeBoundingSphere();
-      ramaInstanced.computeBoundingSphere();
-
-      glbTreesGroup.add(barkInstanced);
-      glbTreesGroup.add(ramaInstanced);
+      glbTreesGroup.add(sectorGroup);
     }
 
     treeGroup.add(glbTreesGroup);
