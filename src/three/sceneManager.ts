@@ -161,21 +161,20 @@ export class F1SceneManager {
       (typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(max-width: 850px)').matches)
     );
 
-    // 2. Initialize WebGLRenderer with high-efficiency mobile settings
+    // 2. Initialize WebGLRenderer with pristine visual fidelity (Antialiasing enabled, full resolution)
     this.renderer = new THREE.WebGLRenderer({
-      antialias: !this.isSoftwareGl && !this.isMobile,
+      antialias: !this.isSoftwareGl, // Hardware antialiasing enabled everywhere: razor-sharp, zero jagged pixels
       powerPreference: 'high-performance',
-      alpha: false, // Critical: disables OS window compositor alpha blending passes on mobile
+      alpha: false, // Performance win: canvas is solid background, no OS compositor alpha pass needed
       stencil: false,
       depth: true,
     });
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.15;
-    const maxDpr = this.isSoftwareGl ? 1 : (this.isMobile ? 1.5 : 2);
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, maxDpr));
+    this.renderer.setPixelRatio(this.isSoftwareGl ? 1 : Math.min(window.devicePixelRatio || 1, 2));
     this.renderer.shadowMap.enabled = !this.isSoftwareGl;
-    this.renderer.shadowMap.type = this.isMobile ? THREE.BasicShadowMap : THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
     const width = container.clientWidth || window.innerWidth;
     const height = container.clientHeight || window.innerHeight;
@@ -186,9 +185,8 @@ export class F1SceneManager {
     this.scene = new THREE.Scene();
     this.setupSkyboxEnvironment();
 
-    // 4. Initialize Camera (Far plane optimized for mobile)
-    const camFar = this.isMobile ? 650 : 1000;
-    this.camera = new THREE.PerspectiveCamera(65, width / height, 0.1, camFar);
+    // 4. Initialize Camera (Full 1000m draw distance, matching PC)
+    this.camera = new THREE.PerspectiveCamera(65, width / height, 0.1, 1000);
 
     // 5. Lighting Rig
     this.setupLighting();
@@ -240,9 +238,8 @@ export class F1SceneManager {
     sunLight.position.set(60, 90, 40);
     sunLight.castShadow = !this.isSoftwareGl;
     if (sunLight.shadow) {
-      const shadowMapDim = this.isMobile ? 512 : 1024;
-      sunLight.shadow.mapSize.width = shadowMapDim;
-      sunLight.shadow.mapSize.height = shadowMapDim;
+      sunLight.shadow.mapSize.width = 1024;
+      sunLight.shadow.mapSize.height = 1024;
       sunLight.shadow.camera.near = 10;
       sunLight.shadow.camera.far = 300;
       const d = 40;
